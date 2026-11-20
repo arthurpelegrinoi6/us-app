@@ -1076,13 +1076,40 @@ async function refresh() {
 }
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refresh(); });
 
+/* ============ login que não se perde ============
+   O iPhone às vezes apaga o localStorage do app instalado na tela inicial.
+   Guardamos a sessão em dois lugares (localStorage + IndexedDB) e lemos de quem tiver. */
+const sessionStore = (() => {
+  const DB = "us-sessao", ST = "kv";
+  let dbp = null;
+  const idb = () => dbp || (dbp = new Promise((res, rej) => {
+    try { const r = indexedDB.open(DB, 1); r.onupgradeneeded = () => r.result.createObjectStore(ST); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); } catch (e) { rej(e); }
+  }));
+  const tx = async (mode, fn) => { const db = await idb(); return new Promise((res, rej) => { const t = db.transaction(ST, mode); const req = fn(t.objectStore(ST)); t.oncomplete = () => res(req && req.result); t.onerror = () => rej(t.error); }); };
+  const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+  const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { } };
+  const lsDel = k => { try { localStorage.removeItem(k); } catch (e) { } };
+  return {
+    async getItem(k) {
+      const a = lsGet(k); if (a) return a;
+      try { const b = await tx("readonly", s => s.get(k)); if (b) { lsSet(k, b); return b; } } catch (e) { }
+      return null;
+    },
+    async setItem(k, v) { lsSet(k, v); try { await tx("readwrite", s => s.put(v, k)); } catch (e) { } },
+    async removeItem(k) { lsDel(k); try { await tx("readwrite", s => s.delete(k)); } catch (e) { } }
+  };
+})();
+/* quem já estava logado com a chave antiga não precisa entrar de novo */
+try { const old = localStorage.getItem("sb-qjouhtitpufjnhocbnbs-auth-token"); if (old && !localStorage.getItem("us-auth")) localStorage.setItem("us-auth", old); } catch (e) { }
+
 /* ============ começar ============ */
 async function init() {
   if (!window.supabase) { showGate(`<div class="center stack"><h1 class="step">Sem conexão</h1><p>Não consegui carregar o Us. Confira a internet e tente de novo.</p><button class="btn" data-g="reload">Tentar de novo</button></div>`); gate.addEventListener("click", e => { if (e.target.closest("[data-g=reload]")) location.reload(); }); return; }
   showGate(loadingHTML("Abrindo o Us…"));
   let key = SB_KEY;
   try { const r = await fetch(`${SB_URL}/auth/v1/settings`, { headers: { apikey: SB_KEY } }); if (r.status === 401 || r.status === 403) key = SB_KEY_LEGADA; } catch (e) { /* offline: segue com a chave principal */ }
-  sb = window.supabase.createClient(SB_URL, key, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
+  sb = window.supabase.createClient(SB_URL, key, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storage: sessionStore, storageKey: "us-auth" } });
+  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { }
   const h = location.hash || "";
   if (/type=recovery/.test(h)) UI.recovery = true;
   let hashErr = "";
