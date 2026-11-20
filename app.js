@@ -68,7 +68,7 @@ function ic(name, size = 22, sw = 2) {
 const PLAY = '<svg width="18" height="18" viewBox="0 0 24 24" fill="#fff" aria-hidden="true"><path d="M7 4.5v15l12.5-7.5Z"/></svg>';
 
 /* ============ estado ============ */
-const S = { user: null, members: [], couple: null, media: [], trips: [], lists: [], items: [], events: [], loaded: false, lastLoad: 0 };
+const S = { user: null, members: [], couple: null, media: [], trips: [], lists: [], items: [], events: [], calendars: [], loaded: false, lastLoad: 0 };
 const t0 = todayDate();
 const UI = {
   tab: "feed", seg: "datas", openList: null, panel: null, viewer: null,
@@ -148,15 +148,16 @@ async function loadData() {
   S.members = mem.sort((a, b) => String(a.joined_at).localeCompare(String(b.joined_at)) || a.user_id.localeCompare(b.user_id));
   if (!me()) { S.couple = null; return false; }
   const coupleId = me().couple_id;
-  const [couple, media, trips, lists, items, events] = await Promise.all([
+  const [couple, media, trips, lists, items, events, cals] = await Promise.all([
     q(sb.from("couples").select("*").eq("id", coupleId).single()),
     fetchAll("media", b => b.order("taken_at", { ascending: false }).order("created_at", { ascending: false }).order("id")),
     q(sb.from("trips").select("*").order("created_at", { ascending: false })),
     q(sb.from("lists").select("*").order("updated_at", { ascending: false })),
     fetchAll("list_items", b => b.order("created_at", { ascending: true }).order("id")),
-    q(sb.from("events").select("*").order("starts_on", { ascending: true }))
+    q(sb.from("events").select("*").order("starts_on", { ascending: true })),
+    sb.from("calendars").select("*").order("created_at", { ascending: true }).then(r => r.error ? [] : r.data, () => [])
   ]);
-  S.couple = couple; S.media = media; S.trips = trips; S.lists = lists; S.items = items; S.events = events;
+  S.couple = couple; S.media = media; S.trips = trips; S.lists = lists; S.items = items; S.events = events; S.calendars = cals;
   S.loaded = true; S.lastLoad = Date.now();
   return true;
 }
@@ -325,11 +326,12 @@ gate.addEventListener("click", async e => {
   else if (a === "skipdate") { UI.dateStep = false; enterApp(); }
 });
 async function signOut() {
+  try { await dropPushOnSignOut(); } catch (e) { /* segue mesmo assim */ }
   try { await sb.auth.signOut(); } catch (e) { /* segue mesmo assim */ }
   resetState(); UI.authTab = "entrar"; showAuth();
 }
 function resetState() {
-  Object.assign(S, { user: null, members: [], couple: null, media: [], trips: [], lists: [], items: [], events: [], loaded: false });
+  Object.assign(S, { user: null, members: [], couple: null, media: [], trips: [], lists: [], items: [], events: [], calendars: [], loaded: false });
   Object.assign(UI, { tab: "feed", openList: null, panel: null, viewer: null, dateStep: false });
   urlCache.clear(); closePanel(true); closeViewer(true); closeSheet();
 }
@@ -516,6 +518,14 @@ function listPreview(L) {
   const open = its.filter(i => !i.done).map(i => i.text);
   return open.length ? open.join(", ") : "Tudo feito";
 }
+const SUG_LISTAS = [["🎬", "Filmes e séries"], ["🍽️", "Restaurantes"], ["✈️", "Viagens"], ["🛒", "Compras"], ["🎁", "Presentes"], ["🏠", "Casa"]];
+const semEmoji = t => String(t).replace(/^[^\p{L}\p{N}]+/u, "").trim().toLowerCase();
+function sugestoesHTML() {
+  const tem = new Set(S.lists.map(l => semEmoji(l.title)));
+  const falta = SUG_LISTAS.map((x, i) => [x, i]).filter(([x]) => !tem.has(x[1].toLowerCase()));
+  if (!falta.length) return "";
+  return `<div class="ngroup-h">Sugestões</div><div class="sugs">${falta.map(([x, i]) => `<button class="sug" data-sug="${i}"><span class="e" aria-hidden="true">${x[0]}</span>${esc(x[1])}</button>`).join("")}</div><p class="sug-h">Toque para criar a lista na hora.</p>`;
+}
 function listasHTML() {
   if (UI.openList !== null) { const html = noteHTML(); if (html) return html; UI.openList = null; }
   const row = L => `<button class="nrow" data-list="${L.id}"><b>${esc(L.title)}</b><span><em>${esc(relDay(L.updated_at))}</em>${esc(listPreview(L))}</span></button>`;
@@ -528,6 +538,7 @@ function listasHTML() {
     ${pins.length ? `<div class="ngroup-h">Fixadas</div><div class="ngroup">${pins.map(row).join("")}</div>` : ""}
     ${rest.length ? `<div class="ngroup-h">Do casal</div><div class="ngroup">${rest.map(row).join("")}</div>` : ""}
     ${S.lists.length ? `<div class="ncount">${plural(S.lists.length, "lista", "listas")}</div>` : ""}
+    ${sugestoesHTML()}
   </div>`;
 }
 function noteHTML() {
@@ -545,35 +556,62 @@ function noteHTML() {
 }
 
 /* ---- calendário ---- */
-const evTime = e => e.time_label || "";
+const CASAL_COR = "#b3122a";
+const PALETA = [["#2f6fd6", "Azul"], ["#2f8f5b", "Verde"], ["#e07a1f", "Laranja"], ["#7a4fd0", "Roxo"], ["#d9a400", "Amarelo"], ["#1f8a8a", "Azul-petróleo"], ["#e0899a", "Rosa"], ["#6e0b1a", "Vinho"], ["#7d6f71", "Cinza"], ["#c2410c", "Terracota"]];
+const SUG_CALS = ["Médicos", "Viagens", "Filhos", "Tarefas da casa", "Trabalho"];
+const HID_KEY = "us-cal-ocultos";
+let HID = new Set();
+try { HID = new Set(JSON.parse(localStorage.getItem(HID_KEY) || "[]")); } catch (e) { HID = new Set(); }
+function saveHid() { try { localStorage.setItem(HID_KEY, JSON.stringify([...HID])); } catch (e) { } }
+const calOf = e => e.calendar_id ? (S.calendars.find(c => c.id === e.calendar_id) || null) : null;
+const evColor = e => { const c = calOf(e); return c ? c.color : CASAL_COR; };
+const evVisible = e => !HID.has(calOf(e) ? e.calendar_id : "casal");
+const evEnd = e => e.ends_on || e.starts_on;
+const evTime = e => String(e.start_time || "").slice(0, 5) || e.time_label || "";
 const sortEv = (a, b) => a.starts_on.localeCompare(b.starts_on) || evTime(a).localeCompare(evTime(b));
+const evsOn = ds => S.events.filter(e => evVisible(e) && e.starts_on <= ds && evEnd(e) >= ds);
+function rangeShort(a, b) {
+  const da = parseYmd(a), db = parseYmd(b), yr = db.getFullYear() !== todayDate().getFullYear() ? " " + db.getFullYear() : "";
+  if (da.getFullYear() === db.getFullYear() && da.getMonth() === db.getMonth()) return `${da.getDate()} a ${db.getDate()} ${MES[db.getMonth()]}${yr}`;
+  return `${da.getDate()} ${MES[da.getMonth()]} a ${db.getDate()} ${MES[db.getMonth()]}${yr}`;
+}
 function calHTML() {
   const y = UI.calY, mo = UI.calM, first = new Date(y, mo, 1), dow = first.getDay(), dim = new Date(y, mo + 1, 0).getDate();
   const todayS = ymd(todayDate());
   let cells = "";
   for (let i = 0; i < dow; i++) cells += `<div class="dcell out"></div>`;
   for (let d = 1; d <= dim; d++) {
-    const ds = `${y}-${pad(mo + 1)}-${pad(d)}`, evs = S.events.filter(e => e.starts_on === ds);
-    const whos = [...new Set(evs.map(e => e.who_user || "ambos"))].slice(0, 3);
-    cells += `<button class="dcell ${ds === todayS ? "today" : ""} ${ds === UI.selDay ? "sel" : ""}" data-day="${ds}" aria-pressed="${ds === UI.selDay}" aria-label="${d} de ${MESL[mo]}${evs.length ? `, ${plural(evs.length, "compromisso", "compromissos")}` : ""}"><span class="n">${d}</span><span class="ds">${whos.map(w => `<i style="--c:${w === "ambos" ? "var(--red)" : memberColor(w)}"></i>`).join("")}</span></button>`;
+    const ds = `${y}-${pad(mo + 1)}-${pad(d)}`, evs = evsOn(ds);
+    const cores = [...new Set(evs.map(evColor))].slice(0, 3);
+    cells += `<button class="dcell ${ds === todayS ? "today" : ""} ${ds === UI.selDay ? "sel" : ""}" data-day="${ds}" aria-pressed="${ds === UI.selDay}" aria-label="${d} de ${MESL[mo]}${evs.length ? `, ${plural(evs.length, "compromisso", "compromissos")}` : ""}"><span class="n">${d}</span><span class="ds">${cores.map(c => `<i style="--c:${c}"></i>`).join("")}</span></button>`;
   }
   const sel = parseYmd(UI.selDay);
-  const dayEvs = S.events.filter(e => e.starts_on === UI.selDay).sort(sortEv);
-  const later = S.events.filter(e => e.starts_on > UI.selDay).sort(sortEv).slice(0, 4);
+  const dayEvs = evsOn(UI.selDay).sort(sortEv);
+  const later = S.events.filter(e => evVisible(e) && e.starts_on > UI.selDay).sort(sortEv).slice(0, 4);
   const evRow = (e, withDate) => {
-    const d = parseYmd(e.starts_on);
-    const sub = withDate ? `${SEM[d.getDay()]}, ${d.getDate()} ${MES[d.getMonth()]}${d.getFullYear() !== todayDate().getFullYear() ? " " + d.getFullYear() : ""} · ${esc(whoName(e.who_user))}` : esc(whoName(e.who_user));
-    return `<div class="evt" style="--c:${whoColor(e.who_user)}"><span class="bar"></span><div><b>${esc(e.title)}</b><span>${sub}</span>${e.note ? `<span class="note-ev">${esc(e.note)}</span>` : ""}</div><div class="tm">${esc(e.time_label || (withDate ? "" : "dia todo"))}</div><button class="del" data-delev="${e.id}" aria-label="Apagar compromisso: ${esc(e.title)}">${ic("trash", 18, 1.9)}</button></div>`;
+    const multi = evEnd(e) > e.starts_on, d = parseYmd(e.starts_on), cal = calOf(e), tempo = evTime(e);
+    let quando = "";
+    if (withDate) quando = multi ? rangeShort(e.starts_on, e.ends_on) : `${SEM[d.getDay()]}, ${d.getDate()} ${MES[d.getMonth()]}${d.getFullYear() !== todayDate().getFullYear() ? " " + d.getFullYear() : ""}`;
+    else if (multi) quando = `Dia ${dayDiff(parseYmd(UI.selDay), d) + 1} de ${dayDiff(parseYmd(e.ends_on), d) + 1} · ${rangeShort(e.starts_on, e.ends_on)}`;
+    const sub = [quando, cal ? cal.name : "", whoName(e.who_user)].filter(Boolean).map(esc).join(" · ");
+    const tm = withDate ? tempo : (multi && UI.selDay !== e.starts_on ? "" : (tempo || "dia todo"));
+    return `<div class="evt" style="--c:${evColor(e)}"><span class="bar"></span><button class="evbody" data-ev="${e.id}" aria-label="Editar compromisso: ${esc(e.title)}"><b>${esc(e.title)}</b><span>${sub}</span>${e.note ? `<span class="note-ev">${esc(e.note)}</span>` : ""}</button><div class="tm">${esc(tm)}</div><button class="del" data-delev="${e.id}" aria-label="Apagar compromisso: ${esc(e.title)}">${ic("trash", 18, 1.9)}</button></div>`;
   };
-  const next = S.events.filter(e => e.starts_on > todayS).sort(sortEv)[0];
+  const next = S.events.filter(e => evVisible(e) && e.starts_on > todayS).sort(sortEv)[0];
   let card = "";
-  if (next) { const n = dayDiff(parseYmd(next.starts_on), todayDate()); card = `<div class="count-card"><div><div class="t">${esc(next.title)}</div><span>${esc(fmtLong(next.starts_on))}${next.time_label ? " · " + esc(next.time_label) : ""}</span></div><div style="text-align:right"><b>${fmtN(n)}</b><span style="display:block">${n === 1 ? "dia" : "dias"}</span></div></div>`; }
+  if (next) {
+    const n = dayDiff(parseYmd(next.starts_on), todayDate()), multi = evEnd(next) > next.starts_on;
+    card = `<div class="count-card"><div><div class="t">${esc(next.title)}</div><span>${esc(multi ? rangeShort(next.starts_on, next.ends_on) : fmtLong(next.starts_on))}${evTime(next) ? " · " + esc(evTime(next)) : ""}</span></div><div style="text-align:right"><b>${fmtN(n)}</b><span style="display:block">${n === 1 ? "dia" : "dias"}</span></div></div>`;
+  }
+  const leg = [];
+  if (!HID.has("casal")) leg.push(["Do casal", CASAL_COR]);
+  S.calendars.filter(c => !HID.has(c.id)).forEach(c => leg.push([c.name, c.color]));
   return `
   <div class="appbar"><span style="font-weight:700;font-size:15px">Agenda do casal</span>
-    <span class="acts"><button data-act="hoje" style="color:var(--red);font-weight:700;font-size:14.5px">Hoje</button><button data-act="evento" aria-label="Novo compromisso" style="color:var(--red)">${ic("plus", 24, 2.2)}</button></span></div>
+    <span class="acts"><button data-act="calendarios" style="color:var(--red);font-weight:700;font-size:14.5px">Calendários</button><button data-act="hoje" style="color:var(--red);font-weight:700;font-size:14.5px">Hoje</button><button data-act="evento" aria-label="Novo compromisso" style="color:var(--red)">${ic("plus", 24, 2.2)}</button></span></div>
   <div class="cal-head"><h2>${cap1(MESL[mo])} <i>${y}</i></h2>
     <span class="arr"><button data-mon="-1" aria-label="Mês anterior">${ic("back", 18, 2.4)}</button><button data-mon="1" aria-label="Próximo mês">${ic("next", 18, 2.4)}</button></span></div>
-  <div class="legend"><span><i style="--c:var(--red)"></i>Os dois</span>${S.members.map(m => `<span><i style="--c:${memberColor(m.user_id)}"></i>${esc(m.display_name || "Alguém")}</span>`).join("")}</div>
+  <div class="legend">${leg.length ? leg.map(([n, c]) => `<span><i style="--c:${c}"></i>${esc(n)}</span>`).join("") : `<span>Nenhum calendário visível. Toque em Calendários.</span>`}</div>
   <div class="wk" aria-hidden="true"><span>D</span><span>S</span><span>T</span><span>Q</span><span>Q</span><span>S</span><span>S</span></div>
   <div class="month">${cells}</div>
   <div class="daylist">
@@ -733,7 +771,7 @@ function openPicker(o) {
 /* ============ ações: perfil ============ */
 function openProfile() {
   const c = S.couple, mm = me();
-  const m = { about: c.about_mode, song_title: c.song_title || "", song_artist: c.song_artist || "", phrase: c.phrase || "", nome: mm.display_name || "", start: c.start_date || "", err: "" };
+  const m = { push: "checking", about: c.about_mode, song_title: c.song_title || "", song_artist: c.song_artist || "", phrase: c.phrase || "", nome: mm.display_name || "", start: c.start_date || "", err: "" };
   const def = {
     model: m, focus: false,
     view: () => `<h3>Editar perfil</h3><p class="hint">O que aparece embaixo dos nomes de vocês.</p>
@@ -748,6 +786,7 @@ function openProfile() {
       <label class="field"><span>Início do namoro</span><input type="date" data-m="start" max="${ymd(todayDate())}" value="${esc(m.start)}"></label>
       <button class="cover-row" type="button" data-s="avatar"><span class="th" style="width:44px;height:44px;border-radius:50%;display:grid;place-items:center;font-family:var(--f-display);font-style:italic;font-size:22px;color:var(--red)">${mm.avatar_path ? imgTag(mm.avatar_path, "") : esc((mm.display_name || "?").charAt(0).toUpperCase())}</span><span><b style="display:block;font-size:15.5px">Sua foto</b><span style="font-size:13px;color:var(--ink-2)">${mm.avatar_path ? "Trocar a foto do seu perfil" : "Escolher uma foto sua"}</span></span></button>
       <button class="cover-row" type="button" data-s="capa"><span class="th ${c.cover_path ? "" : "none"}">${c.cover_path ? imgTag(c.cover_path, "") : ""}</span><span><b style="display:block;font-size:15.5px">Trocar foto de capa</b><span style="font-size:13px;color:var(--ink-2)">Escolher entre as fotos de vocês ou enviar uma nova</span></span></button>
+      <div class="push-box"><b>Notificações dos compromissos</b><p class="d">${esc(PUSH_TXT[m.push] || "")}</p>${m.push === "on" ? '<button type="button" class="btn ghost" data-s="pushoff">Desativar neste aparelho</button>' : m.push === "off" ? '<button type="button" class="btn ghost" data-s="pushon">Ativar neste aparelho</button>' : ""}</div>
       <button class="btn" type="submit" style="margin-top:14px">Salvar</button>
       <button class="btn ghost signout" type="button" data-s="sair">Sair da conta</button>
       </form>`,
@@ -780,10 +819,13 @@ function openProfile() {
         } catch (e) { progEl.hidden = true; toast(isNet(e) ? friendly(e) : "Não consegui usar essa foto. Tente outra."); }
       }),
       capa: () => openCoverPicker(true),
+      pushon: async () => { try { await enablePush(); m.push = "on"; drawSheet(); toast("Notificações ativadas neste aparelho."); } catch (e) { toast(pushMsg(e)); m.push = await pushStatus(); drawSheet(); } },
+      pushoff: async () => { try { await disablePush(); m.push = "off"; drawSheet(); toast("Notificações desativadas neste aparelho."); } catch (e) { toast(pushMsg(e)); } },
       sair: () => { closeSheet(); signOut(); }
     }
   };
   openSheet(def);
+  pushStatus().then(st => { m.push = st; if (SH === def) drawSheet(); }).catch(() => { m.push = "unsupported"; if (SH === def) drawSheet(); });
 }
 async function setCover(path) {
   const r = await q(sb.from("couples").update({ cover_path: path }).eq("id", S.couple.id).select().single());
@@ -921,11 +963,11 @@ async function touchList(id) {
   const L = S.lists.find(l => l.id === id); if (L) L.updated_at = now;
   sb.from("lists").update({ updated_at: now }).eq("id", id).then(() => { });
 }
-async function newList() {
+async function newList(title) {
   try {
-    const L = await q(sb.from("lists").insert({ couple_id: S.couple.id, title: "Nova lista" }).select().single());
+    const L = await q(sb.from("lists").insert({ couple_id: S.couple.id, title: title || "Nova lista" }).select().single());
     S.lists.unshift(L); UI.openList = L.id; render();
-    const t = $("ltitle"); if (t) { t.focus(); t.select(); }
+    const t = $("ltitle"); if (t && !title) { t.focus(); t.select(); }
   } catch (e) { toast(friendly(e)); }
 }
 async function toggleItem(id) {
@@ -960,29 +1002,65 @@ function deleteList() {
 }
 
 /* ============ ações: calendário ============ */
-function openNewEvent() {
-  const m = { title: "", date: UI.selDay, time: "", who: "", note: "", err: "" };
+const ALERTAS = [["", "Nenhum"], ["0", "Na hora"], ["5", "5 min antes"], ["15", "15 min antes"], ["30", "30 min antes"], ["60", "1 hora antes"], ["120", "2 horas antes"], ["1440", "1 dia antes"], ["2880", "2 dias antes"], ["10080", "1 semana antes"]];
+const ALERTAS_DIA = [["", "Nenhum"], ["0", "No dia (9h)"], ["1440", "1 dia antes (9h)"], ["2880", "2 dias antes (9h)"], ["10080", "1 semana antes (9h)"]];
+function proximaCor() { const usadas = new Set(S.calendars.map(c => c.color.toLowerCase())); return (PALETA.find(p => !usadas.has(p[0])) || PALETA[S.calendars.length % PALETA.length])[0]; }
+
+function openEventForm(ev) {
+  const m = {
+    title: ev ? ev.title : "", cal: ev && ev.calendar_id && calOf(ev) ? ev.calendar_id : "", allday: ev ? !evTime(ev) : true,
+    date: ev ? ev.starts_on : UI.selDay, time: ev ? evTime(ev) : "", end: ev && ev.ends_on ? ev.ends_on : "", who: ev && ev.who_user ? ev.who_user : "",
+    alert: ev && ev.alert_minutes != null ? String(ev.alert_minutes) : "", note: ev && ev.note ? ev.note : "", err: ""
+  };
+  const cals = [["", "Do casal", CASAL_COR], ...S.calendars.map(c => [c.id, c.name, c.color])];
   openSheet({
-    model: m,
-    view: () => `<h3>Novo compromisso</h3>${m.err ? hint(m.err) : ""}
+    model: m, focus: !ev,
+    view: () => `<h3>${ev ? "Editar compromisso" : "Novo compromisso"}</h3>${m.err ? hint(m.err) : ""}
       <form novalidate>
       <label class="field"><span>O que vai acontecer</span><input data-m="title" maxlength="120" value="${esc(m.title)}" autocomplete="off" placeholder="Ex.: Jantar na casa da Bia"></label>
-      <label class="field"><span>Dia</span><input type="date" data-m="date" value="${esc(m.date)}"></label>
-      <label class="field"><span>Horário (opcional)</span><input type="time" data-m="time" value="${esc(m.time)}"></label>
+      <div class="field"><span>Calendário</span><div class="chips" role="group" aria-label="Calendário">
+        ${cals.map(([id, nm, cor]) => `<button type="button" class="calchip" data-s="cal" data-v="${esc(id)}" aria-pressed="${m.cal === id}"><i style="--c:${cor}"></i>${esc(nm)}</button>`).join("")}</div></div>
+      <button type="button" class="tgl-row" role="switch" aria-checked="${m.allday}" data-s="allday"><span>Dia inteiro</span><span class="tgl"></span></button>
+      <div class="${m.allday ? "" : "row2"}">
+        <label class="field"><span>Começa</span><input type="date" data-m="date" value="${esc(m.date)}"></label>
+        ${m.allday ? "" : `<label class="field"><span>Horário</span><input type="time" data-m="time" value="${esc(m.time)}"></label>`}
+      </div>
+      <label class="field"><span>Termina (opcional)</span><input type="date" data-m="end" value="${esc(m.end)}" min="${esc(m.date)}"><span class="help">Para compromissos de vários dias, como uma viagem.</span></label>
       <div class="field"><span>Quem vai</span><div class="chips" role="group" aria-label="Quem vai">
         <button type="button" data-s="who" data-v="" aria-pressed="${m.who === ""}">Os dois</button>
         ${S.members.map(x => `<button type="button" data-s="who" data-v="${x.user_id}" aria-pressed="${m.who === x.user_id}">${esc(x.display_name || "Alguém")}</button>`).join("")}</div></div>
+      <label class="field"><span>Alerta</span><select data-m="alert">${(m.allday ? ALERTAS_DIA : ALERTAS).map(([v, t]) => `<option value="${v}" ${m.alert === v ? "selected" : ""}>${t}</option>`).join("")}</select></label>
       <label class="field"><span>Observação (opcional)</span><input data-m="note" maxlength="300" value="${esc(m.note)}" autocomplete="off"></label>
-      <button class="btn" type="submit">Salvar compromisso</button></form>`,
+      <button class="btn" type="submit">${ev ? "Salvar alterações" : "Salvar compromisso"}</button>
+      ${ev ? `<button type="button" class="btn warn" data-s="apagar">Apagar compromisso</button>` : ""}</form>`,
     on: {
+      cal: t => { m.cal = t.dataset.v; drawSheet(); },
+      allday: () => { m.allday = !m.allday; if (m.allday && !ALERTAS_DIA.some(a => a[0] === m.alert)) m.alert = ""; drawSheet(); },
       who: t => { m.who = t.dataset.v; drawSheet(); },
+      apagar: () => deleteEvent(ev.id),
       submit: async () => {
         if (!m.title.trim()) { m.err = "Dê um nome para o compromisso."; drawSheet(); return; }
-        if (!m.date) { m.err = "Escolha o dia."; drawSheet(); return; }
-        const e = await q(sb.from("events").insert({ couple_id: S.couple.id, title: m.title.trim(), starts_on: m.date, time_label: m.time || null, who_user: m.who || null, note: m.note.trim() || null }).select().single());
-        S.events.push(e); S.events.sort(sortEv);
+        if (!m.date) { m.err = "Escolha o dia em que começa."; drawSheet(); return; }
+        if (!m.allday && !m.time) { m.err = "Escolha o horário ou ligue Dia inteiro."; drawSheet(); return; }
+        if (m.end && m.end < m.date) { m.err = "O fim precisa ser no mesmo dia do começo ou depois."; drawSheet(); return; }
+        const row = {
+          title: m.title.trim(), starts_on: m.date, ends_on: m.end && m.end > m.date ? m.end : null,
+          start_time: m.allday ? null : m.time, time_label: m.allday ? null : m.time,
+          calendar_id: m.cal || null, who_user: m.who || null, alert_minutes: m.alert === "" ? null : +m.alert, note: m.note.trim() || null
+        };
+        let saved;
+        if (ev) {
+          saved = await q(sb.from("events").update(row).eq("id", ev.id).select().single());
+          const i = S.events.findIndex(x => x.id === ev.id); if (i >= 0) S.events[i] = saved; else S.events.push(saved);
+        } else {
+          saved = await q(sb.from("events").insert({ couple_id: S.couple.id, ...row }).select().single());
+          S.events.push(saved);
+        }
+        S.events.sort(sortEv);
+        if (HID.has(m.cal || "casal")) { HID.delete(m.cal || "casal"); saveHid(); }
         const d = parseYmd(m.date); UI.calY = d.getFullYear(); UI.calM = d.getMonth(); UI.selDay = m.date;
-        closeSheet(); render(true); toast("Compromisso salvo.");
+        closeSheet(); render(true); toast(ev ? "Compromisso atualizado." : "Compromisso salvo.");
+        if (row.alert_minutes != null) offerPush();
       }
     }
   });
@@ -993,6 +1071,134 @@ function deleteEvent(id) {
     await q(sb.from("events").delete().eq("id", id));
     S.events = S.events.filter(x => x.id !== id); closeSheet(); render(true); toast("Compromisso apagado.");
   });
+}
+
+/* ---- calendários (as cores) ---- */
+async function criarCalendario(name, color) {
+  const c = await q(sb.from("calendars").insert({ couple_id: S.couple.id, name, color }).select().single());
+  S.calendars.push(c); return c;
+}
+function openCalendarios() {
+  const def = {
+    model: {}, focus: false,
+    view: () => {
+      const rows = [["casal", "Do casal", CASAL_COR, false], ...S.calendars.map(c => [c.id, c.name, c.color, true])];
+      return `<h3>Calendários</h3><p class="hint">Toque para mostrar ou ocultar na agenda.</p>
+      <div class="calrows">${rows.map(([id, nm, cor, ed]) => `<div class="calrow"><button type="button" class="calmain" role="switch" aria-checked="${!HID.has(id)}" data-s="vis" data-id="${esc(id)}"><span class="vis" style="--c:${cor}">${ic("check", 14, 3.4)}</span><span class="nm">${esc(nm)}</span></button>${ed ? `<button type="button" class="caledit" data-s="editcal" data-id="${esc(id)}" aria-label="Editar o calendário ${esc(nm)}">${ic("edit", 18, 1.9)}</button>` : ""}</div>`).join("")}</div>
+      <div class="btns" style="margin:0 0 14px"><button class="btn ghost" data-s="todos">Mostrar todos</button><button class="btn ghost" data-s="nenhum">Ocultar todos</button></div>
+      ${S.calendars.length ? "" : `<p class="hint">Que tal começar por um destes?</p><div class="chips">${SUG_CALS.map(n => `<button type="button" data-s="sug" data-v="${esc(n)}">${esc(n)}</button>`).join("")}</div>`}
+      <button class="btn" data-s="novo">Novo calendário</button>`;
+    },
+    on: {
+      vis: t => { const id = t.dataset.id; if (HID.has(id)) HID.delete(id); else HID.add(id); saveHid(); drawSheet(); render(true); },
+      todos: () => { HID.clear(); saveHid(); drawSheet(); render(true); },
+      nenhum: () => { HID = new Set(["casal", ...S.calendars.map(c => c.id)]); saveHid(); drawSheet(); render(true); },
+      sug: async t => { const n = t.dataset.v; await criarCalendario(n, proximaCor()); drawSheet(); render(true); toast(`Calendário ${n} criado.`); },
+      novo: () => openCalForm(null),
+      editcal: t => { const c = S.calendars.find(x => x.id === t.dataset.id); if (c) openCalForm(c); }
+    }
+  };
+  openSheet(def);
+}
+function openCalForm(cal) {
+  const m = { name: cal ? cal.name : "", color: cal ? cal.color : proximaCor(), err: "" };
+  openSheet({
+    model: m, focus: !cal,
+    view: () => `<h3>${cal ? "Editar calendário" : "Novo calendário"}</h3>${m.err ? hint(m.err) : ""}
+      <form novalidate>
+      <label class="field"><span>Nome</span><input data-m="name" maxlength="40" value="${esc(m.name)}" autocomplete="off" placeholder="Ex.: Médicos"></label>
+      <div class="field"><span>Cor</span><div class="swatches" role="radiogroup" aria-label="Cor do calendário">${PALETA.map(([hex, nm]) => `<button type="button" class="swatch" role="radio" aria-label="${nm}" aria-checked="${m.color.toLowerCase() === hex}" data-s="cor" data-v="${hex}" style="--c:${hex}">${ic("check", 16, 3.2)}</button>`).join("")}</div></div>
+      <button class="btn" type="submit">${cal ? "Salvar" : "Criar calendário"}</button>
+      ${cal ? `<button type="button" class="btn warn" data-s="apagar">Apagar calendário</button>` : ""}
+      <button type="button" class="btn ghost" data-s="voltar">Voltar</button></form>`,
+    on: {
+      cor: t => { m.color = t.dataset.v; drawSheet(); },
+      voltar: () => sheetBack(),
+      apagar: () => askConfirm(`Apagar o calendário ${cal.name}?`, "Os compromissos dele não somem: voltam para Do casal.", "Apagar calendário", async () => {
+        await q(sb.from("calendars").delete().eq("id", cal.id));
+        S.calendars = S.calendars.filter(c => c.id !== cal.id);
+        S.events.forEach(e => { if (e.calendar_id === cal.id) e.calendar_id = null; });
+        HID.delete(cal.id); saveHid(); render(true); openCalendarios(); toast("Calendário apagado.");
+      }),
+      submit: async () => {
+        const name = m.name.trim();
+        if (!name) { m.err = "Dê um nome para o calendário."; drawSheet(); return; }
+        if (cal) { const r = await q(sb.from("calendars").update({ name, color: m.color }).eq("id", cal.id).select().single()); Object.assign(cal, r); }
+        else await criarCalendario(name, m.color);
+        render(true); sheetBack(); toast(cal ? "Calendário salvo." : "Calendário criado.");
+      }
+    }
+  }, true);
+}
+
+/* ---- avisos no celular ---- */
+const VAPID = "BEJClVUgE08Luw7szg-0m4oUhYPAF2XOnhjoFln8EZ1Ohv77ecnBW6J2c07oNfxcj4VOxz61MF8plfUp1-RvUa8";
+const b64ToU8 = s => { const p = "=".repeat((4 - s.length % 4) % 4), r = atob((s + p).replace(/-/g, "+").replace(/_/g, "/")); return Uint8Array.from(r, c => c.charCodeAt(0)); };
+async function pushStatus() {
+  const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const standalone = (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || navigator.standalone === true;
+  const ok = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  if (ios && (!standalone || !ok)) return "ios";
+  if (!ok) return "unsupported";
+  if (Notification.permission === "denied") return "blocked";
+  try { const reg = await navigator.serviceWorker.getRegistration(); const sub = reg && await reg.pushManager.getSubscription(); if (sub && Notification.permission === "granted") return "on"; } catch (e) { }
+  return "off";
+}
+const PUSH_TXT = {
+  checking: "Conferindo…",
+  on: "Ativadas neste aparelho. Você recebe o aviso na hora que escolher.",
+  off: "Desativadas neste aparelho. Ative para ser lembrado dos compromissos.",
+  blocked: "Bloqueadas neste aparelho. Para receber os avisos, libere as notificações do Us nas configurações do celular ou do navegador.",
+  ios: "No iPhone, os avisos funcionam com o Us instalado na Tela de Início: no Safari, toque em Compartilhar e depois em Adicionar à Tela de Início.",
+  unsupported: "Este navegador não permite avisos. Tente abrir o Us no Chrome ou no Safari."
+};
+async function enablePush() {
+  if (!("Notification" in window)) throw own("Este aparelho não permite avisos.");
+  const perm = await Notification.requestPermission();
+  if (perm !== "granted") throw own("Sem a sua permissão não dá para avisar. Libere as notificações nas configurações.");
+  const reg = await Promise.race([navigator.serviceWorker.ready, new Promise((_, rej) => setTimeout(() => rej(own("Não consegui ativar agora. Feche e abra o Us e tente de novo.")), 8000))]);
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToU8(VAPID) });
+  const j = sub.toJSON(), k = j.keys || {};
+  await q(sb.rpc("register_push", { p_endpoint: sub.endpoint, p_p256dh: k.p256dh, p_auth: k.auth }));
+}
+async function disablePush() {
+  const reg = await navigator.serviceWorker.getRegistration();
+  const sub = reg && await reg.pushManager.getSubscription();
+  if (sub) { const ep = sub.endpoint; await sub.unsubscribe(); await q(sb.from("push_subscriptions").delete().eq("endpoint", ep)); }
+}
+const pushMsg = e => e && e.own ? e.message : friendly(e, "Não consegui mudar as notificações. Tente de novo em instantes.");
+let pushOfferSeen = false;
+async function offerPush() {
+  if (pushOfferSeen) return;
+  const st = await pushStatus();
+  if (st === "on") return;
+  pushOfferSeen = true;
+  if (st === "off") {
+    openSheet({
+      focus: false,
+      view: () => `<h3>Quer ser avisado?</h3><p class="hint">Ative as notificações neste celular e o Us lembra vocês na hora certa.</p><button class="btn" data-s="ativar">Ativar notificações neste celular</button><button class="btn ghost" data-s="depois">Agora não</button>`,
+      on: {
+        ativar: async () => { try { await enablePush(); closeSheet(); toast("Notificações ativadas neste celular."); } catch (e) { toast(pushMsg(e)); } },
+        depois: () => closeSheet()
+      }
+    });
+  } else {
+    openSheet({ focus: false, view: () => `<h3>Avisos no celular</h3><p class="hint">${esc(PUSH_TXT[st])}</p><button class="btn" data-s="ok">Entendi</button>`, on: { ok: () => closeSheet() } });
+  }
+}
+
+/* ao sair da conta, este aparelho deixa de receber avisos dessa conta (erros são ignorados) */
+async function dropPushOnSignOut() {
+  try {
+    if (!("serviceWorker" in navigator)) return;
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = reg && reg.pushManager && await reg.pushManager.getSubscription();
+    if (!sub) return;
+    const ep = sub.endpoint;
+    try { await sb.from("push_subscriptions").delete().eq("endpoint", ep); } catch (e) { }
+    try { await sub.unsubscribe(); } catch (e) { }
+  } catch (e) { }
 }
 function copyCode() {
   const code = S.couple.invite_code;
@@ -1010,8 +1216,9 @@ $("tabbar").addEventListener("click", e => {
   UI.tab = b.dataset.tab; render();
   view.classList.remove("enter"); void view.offsetWidth; view.classList.add("enter");
 });
+let sugBusy = false;
 $("main").addEventListener("click", e => {
-  const t = e.target.closest("[data-media],[data-act],[data-seg],[data-list],[data-check],[data-delitem],[data-day],[data-mon],[data-trip],[data-place],[data-delev]");
+  const t = e.target.closest("[data-media],[data-act],[data-seg],[data-list],[data-check],[data-delitem],[data-day],[data-mon],[data-trip],[data-place],[data-delev],[data-ev],[data-sug]");
   if (!t) return;
   const d = t.dataset;
   if (d.media) return openViewer(d.media);
@@ -1022,6 +1229,8 @@ $("main").addEventListener("click", e => {
   if (d.check) return toggleItem(d.check);
   if (d.delitem) return deleteItem(d.delitem);
   if (d.delev) return deleteEvent(d.delev);
+  if (d.ev) { const x = S.events.find(v => v.id === d.ev); return x && openEventForm(x); }
+  if (d.sug) { if (sugBusy) return; const x = SUG_LISTAS[+d.sug]; if (!x) return; sugBusy = true; return newList(`${x[0]} ${x[1]}`).finally(() => { sugBusy = false; }); }
   if (d.day) { UI.selDay = d.day; return render(true); }
   if (d.mon) {
     UI.calM += +d.mon; if (UI.calM < 0) { UI.calM = 11; UI.calY--; } if (UI.calM > 11) { UI.calM = 0; UI.calY++; }
@@ -1038,9 +1247,9 @@ $("main").addEventListener("click", e => {
       catch (err) { toast(friendly(err)); }
     },
     "v-edit": openEditMedia, "v-del": deleteMedia,
-    novalista: newList, voltarlista: () => { UI.openList = null; render(); }, fixar: togglePin, apagarlista: deleteList,
+    novalista: () => newList(), voltarlista: () => { UI.openList = null; render(); }, fixar: togglePin, apagarlista: deleteList,
     hoje: () => { const n = todayDate(); UI.calY = n.getFullYear(); UI.calM = n.getMonth(); UI.selDay = ymd(n); render(true); },
-    evento: openNewEvent
+    evento: () => openEventForm(), calendarios: openCalendarios
   }[d.act];
   if (A) A();
 });
@@ -1112,6 +1321,7 @@ async function init() {
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { }
   const h = location.hash || "";
   if (/type=recovery/.test(h)) UI.recovery = true;
+  else if (/^#cal\b/.test(h)) { UI.tab = "cal"; history.replaceState(null, "", location.pathname); }
   let hashErr = "";
   if (/error_code=otp_expired|error=access_denied/.test(h)) { hashErr = "O link venceu ou já foi usado. Peça um novo em Esqueci a senha."; history.replaceState(null, "", location.pathname); }
   sb.auth.onAuthStateChange((ev, session) => {
@@ -1125,5 +1335,8 @@ async function init() {
   await boot();
 }
 if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => { }));
+if ("serviceWorker" in navigator) navigator.serviceWorker.addEventListener("message", e => {
+  if (e.data && e.data.tipo === "abrir-calendario" && S.couple) { closePanel(); closeViewer(); closeSheet(); UI.tab = "cal"; render(); }
+});
 init();
 })();

@@ -1,5 +1,5 @@
 /* Guarda só os arquivos do próprio app. Nunca guarda respostas do Supabase, fontes ou fotos. */
-const VERSAO = "us-v2";
+const VERSAO = "us-v3";
 const ARQUIVOS = ["./", "index.html", "styles.css", "app.js", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png"];
 
 self.addEventListener("install", e => {
@@ -19,4 +19,24 @@ self.addEventListener("fetch", e => {
       return res;
     }).catch(() => caches.match(req).then(r => r || caches.match("index.html")))
   );
+});
+
+/* avisos dos compromissos: o servidor manda {title, body, tag, url} */
+self.addEventListener("push", e => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch (x) { try { d = { body: e.data.text() }; } catch (y) { d = {}; } }
+  e.waitUntil(self.registration.showNotification(d.title || "Us", {
+    body: d.body || "", tag: d.tag || undefined, icon: "icons/icon-192.png", badge: "icons/icon-192.png", data: { url: d.url || "./" }
+  }));
+});
+self.addEventListener("notificationclick", e => {
+  e.notification.close();
+  const url = String((e.notification.data && e.notification.data.url) || "./");
+  const cal = /#cal/.test(url);
+  e.waitUntil((async () => {
+    const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    const aberta = wins.find(w => w.url.startsWith(self.registration.scope));
+    if (aberta) { try { await aberta.focus(); } catch (x) { } if (cal) aberta.postMessage({ tipo: "abrir-calendario" }); return; }
+    return self.clients.openWindow(new URL(cal ? "./#cal" : "./", self.registration.scope).href);
+  })());
 });
