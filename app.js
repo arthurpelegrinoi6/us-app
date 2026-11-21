@@ -172,7 +172,7 @@ function loadingHTML(msg) { return `<div class="center stack"><div class="spinne
 function errorGate(e) {
   showGate(`<div class="center stack"><h1 class="step">Não deu para abrir o Us</h1><p>${esc(friendly(e, "Algo deu errado ao carregar."))}</p><button class="btn" data-g="retry">Tentar de novo</button><button class="btn ghost" data-g="signout">Sair da conta</button></div>`);
 }
-const AUTH_HERO = `<div class="hero-us" aria-label="Us">Us</div><p class="tagline">Baixar o Us juntos é o novo juntar as escovas de dente.</p><p class="lede">Fotos, listas e datas, só de vocês dois.</p>`;
+const AUTH_HERO = `<div class="hero-us" role="img" aria-label="Us"><svg class="mark" viewBox="204 150 616 700" aria-hidden="true"><path d="M262 292C240 560 330 796 512 796C694 796 784 560 762 292C756 196 690 170 624 196C540 228 430 262 430 366C430 470 608 444 608 546C608 640 468 656 418 584" fill="none" stroke="currentColor" stroke-width="56" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Us</span></div><p class="tagline">Baixar o Us juntos é o novo juntar as escovas de dente.</p><p class="lede">Fotos, listas e datas, só de vocês dois.</p>`;
 function authMsg(kind, text) { const el = $("authmsg"); if (el) { el.className = "msg " + kind; el.textContent = text; el.hidden = false; } }
 function authErr(e) {
   const m = String((e && e.message) || e || "");
@@ -535,7 +535,7 @@ function feedHTML() {
     : `<div class="cover empty"><button class="pbtn" data-act="capa">Escolher capa</button></div>`;
   const invite = ms.length < 2 ? `<div class="invite"><div><b>Convide quem você ama</b><span class="code" aria-label="Código de convite">${esc(c.invite_code)}</span></div><button class="pbtn red small" data-act="copiar" style="padding:8px 16px;flex:none">Copiar código</button></div>` : "";
   return `
-  <div class="appbar"><span><span class="logo">Us</span><span class="lock">${ic("lock", 12, 2.4)}só nós dois</span></span>
+  <div class="appbar"><span><span class="logo" role="img" aria-label="Us"><svg class="mark" viewBox="204 150 616 700" aria-hidden="true"><path d="M262 292C240 560 330 796 512 796C694 796 784 560 762 292C756 196 690 170 624 196C540 228 430 262 430 366C430 470 608 444 608 546C608 640 468 656 418 584" fill="none" stroke="currentColor" stroke-width="56" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Us</span></span><span class="lock">${ic("lock", 12, 2.4)}só nós dois</span></span>
     <span class="acts"><button data-act="novo" aria-label="Novo post">${ic("plus", 25, 1.8)}</button></span></div>
   ${cover}
   <div class="prof">
