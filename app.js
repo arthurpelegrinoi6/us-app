@@ -1276,43 +1276,68 @@ function htmlToText(h) {
   doc.querySelectorAll("div,p,li,ul,ol,h1,h2,h3,h4,h5,h6,tr,blockquote,pre,section,article").forEach(n => n.append("\n"));
   return doc.body.textContent || "";
 }
-/* RTF simples: parágrafos viram linhas; tabelas de fontes e cores saem */
+/* RTF (formato que o Notas do Mac também manda): lê de verdade, ignorando tabelas, marcadores de lista e códigos */
 function rtfToText(r) {
-  let t = String(r);
-  for (const d of ["fonttbl", "colortbl", "stylesheet", "info", "expandedcolortbl", "listtable", "listoverridetable"]) {
-    for (let i = t.indexOf("{\\" + d); i >= 0; i = t.indexOf("{\\" + d)) {
-      let depth = 0, j = i;
-      for (; j < t.length; j++) { if (t[j] === "{") depth++; else if (t[j] === "}" && --depth === 0) break; }
-      t = t.slice(0, i) + t.slice(j + 1);
+  const s = String(r), SKIP = /^(fonttbl|colortbl|expandedcolortbl|stylesheet|info|listtable|listoverridetable|listtext|pict|header|footer|generator|themedata|datastore|latentstyles|xmlnstbl|rsidtbl|mmathPr|filetbl|revtbl)$/;
+  let out = "", i = 0, uc = 1, skipN = 0;
+  const stack = [{ skip: false }];
+  const cur = () => stack[stack.length - 1];
+  while (i < s.length) {
+    const c = s[i];
+    if (c === "{") { stack.push({ skip: cur().skip, fresh: true }); i++; continue; }
+    if (c === "}") { if (stack.length > 1) stack.pop(); i++; continue; }
+    if (c === "\\") {
+      const n = s[i + 1];
+      if (n === "\n" || n === "\r") { if (!cur().skip) out += "\n"; i += 2; continue; }
+      if (n === "*") { cur().skip = true; i += 2; continue; }
+      if (n === "'") { const h = s.substr(i + 2, 2); if (!cur().skip && skipN === 0) out += String.fromCharCode(parseInt(h, 16)); else if (skipN > 0) skipN--; i += 4; continue; }
+      if (n === "\\" || n === "{" || n === "}") { if (!cur().skip) out += n; i += 2; continue; }
+      if (n === "~") { if (!cur().skip) out += " "; i += 2; continue; }
+      const m = /^([a-zA-Z]+)(-?\d+)? ?/.exec(s.slice(i + 1, i + 40));
+      if (!m) { i += 2; continue; }
+      const w = m[1], arg = m[2];
+      i += 1 + m[0].length;
+      const g = cur();
+      if (g.fresh && SKIP.test(w)) g.skip = true;
+      g.fresh = false;
+      if (g.skip) continue;
+      if (w === "par" || w === "line" || w === "row") out += "\n";
+      else if (w === "tab" || w === "cell") out += " ";
+      else if (w === "uc") uc = +arg || 0;
+      else if (w === "u") { const v = +arg; out += String.fromCharCode(v < 0 ? v + 65536 : v); skipN = uc; }
+      continue;
     }
+    if (c === "\n" || c === "\r") { i++; continue; }
+    cur().fresh = false;
+    if (!cur().skip) { if (skipN > 0) skipN--; else out += c; }
+    i++;
   }
-  return t.replace(/\\pard?\b|\\par\b|\\line\b/g, "\n").replace(/\\'([0-9a-f]{2})/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
-    .replace(/\\u(-?\d+)\??/g, (_, n) => String.fromCharCode(+n < 0 ? +n + 65536 : +n)).replace(/\\[a-z]+-?\d* ?/gi, "").replace(/[{}]/g, "");
+  return out;
 }
 const HTMLISH = /<\/?(div|br|p|span|li|ul|ol|b|i|a|body|html|meta)\b[^>]*>/i;
-/* lê TODOS os tipos que vierem e fica com o que tiver mais linhas úteis (empate: texto puro) */
+const RTFISH = /^\s*\{\\rtf/;
+/* ordem de preferência: texto puro > HTML (só se trouxer mais linhas) > RTF (só se não houver nenhum dos dois) */
 function clipLines(cd) {
   if (!cd) return [];
-  const types = [...new Set(["text/plain", "text/html", "text/rtf", "text/uri-list", ...Array.from(cd.types || [])])];
-  let best = [];
-  for (const ty of types) {
-    let v = ""; try { v = cd.getData(ty) || ""; } catch (x) { }
-    if (!v || !/^text\//.test(ty)) continue;
-    let txt = v;
-    if (ty === "text/html") txt = htmlToText(v);
-    else if (/rtf/.test(ty)) txt = rtfToText(v);
-    else if (ty === "text/uri-list") txt = v.split(/\r?\n/).filter(l => l && l[0] !== "#").join("\n");
-    else if (HTMLISH.test(v)) txt = htmlToText(v);
-    const lines = parseLines(txt);
-    if (lines.length > best.length) best = lines;
-  }
-  return best;
+  const get = ty => { try { return cd.getData(ty) || ""; } catch (x) { return ""; } };
+  const plainRaw = get("text/plain");
+  let plain = [];
+  if (plainRaw) plain = parseLines(RTFISH.test(plainRaw) ? rtfToText(plainRaw) : HTMLISH.test(plainRaw) ? htmlToText(plainRaw) : plainRaw);
+  const htmlRaw = get("text/html");
+  const html = htmlRaw ? parseLines(htmlToText(htmlRaw)) : [];
+  if (plain.length && plain.length >= html.length) return plain;
+  if (html.length) return html;
+  const rtfRaw = get("text/rtf") || get("text/richtext") || get("application/rtf");
+  if (rtfRaw) { const r = parseLines(rtfToText(rtfRaw)); if (r.length) return r; }
+  const uri = get("text/uri-list");
+  if (uri) return parseLines(uri.split(/\r?\n/).filter(l => l && l[0] !== "#").join("\n"));
+  return plain;
 }
 /* marcadores de lista/checklist no começo da linha: ◦ • - * – — ☐ ☑ ✓ ✔ ✅ ⬜ [ ] [x] e números "1." "1)" */
 const MARCA = /^(?:[-*•◦‣⁃·▪▫●○◌◯–—]\s+|\[[ xX✓✔]?\]\s*|[☐☑☒□■✓✔✅⬜☑️✔️]\s*|\d{1,3}[.)]\s+)/;
 const INVIS = /[\u00a0\u1680\u2000-\u200d\u202f\u205f\u2060\u3000\ufeff]/g;
 /* uma linha de texto sem marcador de checklist/lista no começo e sem espaços invisíveis */
-const limpaLinha = l => { let t = String(l).replace(INVIS, " ").trim(), prev; do { prev = t; t = t.replace(MARCA, "").trim(); } while (t !== prev); return t.slice(0, 5000); };
+const limpaLinha = l => { let t = String(l).replace(INVIS, " ").trim(), prev; do { prev = t; t = t.replace(MARCA, "").replace(/\s*\\+$/, "").trim(); } while (t !== prev); if (/^\\[a-z*']/i.test(t) || !/[\p{L}\p{N}\p{Extended_Pictographic}]/u.test(t)) return ""; return t.slice(0, 5000); };
 const QUEBRA = /\r\n|[\n\r\u2028\u2029\u0085\u000b\u000c]/;
 function parseLines(txt) { return String(txt).split(new RegExp(QUEBRA.source)).map(limpaLinha).filter(Boolean); }
 const temQuebra = v => new RegExp(QUEBRA.source).test(String(v));
