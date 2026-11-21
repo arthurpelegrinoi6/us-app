@@ -69,7 +69,7 @@ function ic(name, size = 22, sw = 2) {
 const PLAY = '<svg width="18" height="18" viewBox="0 0 24 24" fill="#fff" aria-hidden="true"><path d="M7 4.5v15l12.5-7.5Z"/></svg>';
 
 /* ============ estado ============ */
-const S = { user: null, members: [], couple: null, media: [], trips: [], lists: [], items: [], events: [], calendars: [], dates: [], loaded: false, lastLoad: 0 };
+const S = { user: null, members: [], couple: null, media: [], trips: [], lists: [], items: [], events: [], calendars: [], dates: [], sections: [], loaded: false, lastLoad: 0 };
 const t0 = todayDate();
 const UI = {
   tab: "feed", seg: "datas", openList: null, panel: null, viewer: null,
@@ -150,7 +150,7 @@ async function loadData() {
   S.members = sortMembers(mem);
   if (!me()) { S.couple = null; return false; }
   const coupleId = me().couple_id;
-  const [couple, media, trips, lists, items, events, cals, dts] = await Promise.all([
+  const [couple, media, trips, lists, items, events, cals, dts, secs] = await Promise.all([
     q(sb.from("couples").select("*").eq("id", coupleId).single()),
     fetchAll("media", b => b.order("taken_at", { ascending: false }).order("created_at", { ascending: false }).order("id")),
     q(sb.from("trips").select("*").order("created_at", { ascending: false })),
@@ -158,9 +158,10 @@ async function loadData() {
     fetchAll("list_items", b => b.order("position", { ascending: true }).order("created_at", { ascending: true }).order("id")),
     q(sb.from("events").select("*").order("starts_on", { ascending: true })),
     sb.from("calendars").select("*").order("created_at", { ascending: true }).then(r => r.error ? [] : r.data, () => []),
-    sb.from("couple_dates").select("*").order("created_at", { ascending: true }).then(r => r.error ? [] : r.data, () => [])
+    sb.from("couple_dates").select("*").order("created_at", { ascending: true }).then(r => r.error ? [] : r.data, () => []),
+    sb.from("list_sections").select("*").order("position", { ascending: true }).then(r => r.error ? [] : r.data, () => [])
   ]);
-  S.dates = dts;
+  S.dates = dts; S.sections = secs;
   S.couple = couple; S.media = media; S.trips = trips; S.lists = lists; S.items = items; S.events = events; S.calendars = cals;
   S.loaded = true; S.lastLoad = Date.now();
   return true;
@@ -253,7 +254,7 @@ const DSTEP = {
   engaged: () => ({ h: "Quando foi o pedido de noivado?", lede: "Vira um lembrete todo ano, para os dois.", label: DLABEL.engaged }),
   married: () => ({ h: "Quando foi o casamento?", lede: "Vira um lembrete todo ano, para os dois.", label: DLABEL.married }),
   child: () => ({ h: "Quando nasceu o primeiro filho?", lede: "O aniversário dele ou dela vira lembrete todo ano, para os dois." }),
-  others: () => ({ h: "Outras datas importantes", lede: "Aniversário de um filho ou de um amigo, uma data só de vocês. Se não tiver nenhuma, é só continuar." }),
+  others: () => ({ h: "Outras datas importantes", lede: "Aniversário de um filho, de um pet, de alguém da família, ou uma data importante só de vocês dois. Se não tiver nenhuma, é só continuar." }),
   birthday: () => ({ h: "Quando é o seu aniversário?", lede: `Só ${partnerName()} vê esse lembrete, um dia antes.`, label: "Seu aniversário" })
 };
 /* quais datas ainda podem ser escolhidas (o que já está preenchido não volta) */
@@ -262,6 +263,24 @@ function flowOptions(f) {
   if (st === "noivado" || st === "casamento") keys.push("engaged");
   if (st === "casamento") keys.push("married");
   return keys.filter(k => f.snap[k]);
+}
+/* todas as datas da fase (as já preenchidas aparecem marcadas, com a data embaixo) */
+function flowShown(f) {
+  const st = f.stage, keys = ["met", "kiss", "dating"];
+  if (st === "noivado" || st === "casamento") keys.push("engaged");
+  if (st === "casamento") keys.push("married", "child");
+  return keys;
+}
+/* já vêm marcadas: namorados, pedido de namoro; noivos, namoro e noivado; casados, casamento */
+function defaultChecked(f) {
+  const base = f.stage === "casamento" ? ["married"] : f.stage === "noivado" ? ["dating", "engaged"] : ["dating"];
+  return base.filter(k => f.snap[k]);
+}
+function filledDate(k) {
+  const c = S.couple;
+  if (k === "child") { const d = S.dates.find(x => x.kind === "child"); return d ? `${d.title} · ${fmtLong(d.date)}` : ""; }
+  const v = { met: c.met_on, kiss: c.first_kiss_on, dating: c.start_date, engaged: c.engaged_on, married: c.married_on }[k];
+  return v ? fmtLong(v) : "";
 }
 function flowPlan(f) {
   const out = [];
@@ -291,8 +310,10 @@ function showDatesStep() {
   let body;
   if (k === "stage") body = `<div class="pick-list" role="group" aria-label="Fase do casal">${STAGES.map(([v, t]) => `<button type="button" class="pick-opt" data-g="stage" data-v="${v}">${t}</button>`).join("")}</div>`;
   else if (k === "pick") {
-    if (!f.checked) f.checked = f.stage === "casamento" && f.snap.married ? ["married"] : [];
-    body = `<div class="pick-list" role="group" aria-label="Datas preferidas">${flowOptions(f).map(o => `<button type="button" class="pick-opt multi" data-g="ptoggle" data-v="${o}" aria-pressed="${f.checked.includes(o)}"><span class="cb" aria-hidden="true">${ic("check", 14, 3.4)}</span>${esc(DLABEL[o])}</button>`).join("")}</div>
+    if (!f.checked) f.checked = defaultChecked(f);
+    body = `<div class="pick-list" role="group" aria-label="Datas preferidas">${flowShown(f).map(o => f.snap[o]
+      ? `<button type="button" class="pick-opt multi" data-g="ptoggle" data-v="${o}" aria-pressed="${f.checked.includes(o)}"><span class="cb" aria-hidden="true">${ic("check", 14, 3.4)}</span><span class="po-t">${esc(DLABEL[o])}</span></button>`
+      : `<div class="pick-opt multi locked" role="group" aria-label="${esc(DLABEL[o])}, já preenchido: ${esc(filledDate(o))}"><span class="cb" aria-hidden="true">${ic("check", 14, 3.4)}</span><span class="po-t">${esc(DLABEL[o])}<small>${esc(filledDate(o))}</small></span></div>`).join("")}</div>
       <button class="btn" type="button" data-g="pcont" style="margin-top:14px">${go}</button>`;
   } else if (k === "child") body = `<form data-form="child" novalidate>
       <label class="field"><span>Nome</span><input name="nome" maxlength="60" autocomplete="off"></label>
@@ -461,7 +482,7 @@ async function signOut() {
   resetState(); UI.authTab = "entrar"; showAuth();
 }
 function resetState() {
-  Object.assign(S, { user: null, members: [], couple: null, media: [], trips: [], lists: [], items: [], events: [], calendars: [], dates: [], loaded: false });
+  Object.assign(S, { user: null, members: [], couple: null, media: [], trips: [], lists: [], items: [], events: [], calendars: [], dates: [], sections: [], loaded: false });
   Object.assign(UI, { tab: "feed", openList: null, panel: null, viewer: null, dflow: null });
   urlCache.clear(); closePanel(true); closeViewer(true); closeSheet();
 }
@@ -645,19 +666,35 @@ function closeViewer(quick) { UI.viewer = null; viewer.classList.remove("on"); c
 
 /* ---- listas ---- */
 const cmpItem = (a, b) => (a.position - b.position) || String(a.created_at).localeCompare(String(b.created_at)) || a.id.localeCompare(b.id);
+const cmpSec = (a, b) => (a.position - b.position) || String(a.created_at).localeCompare(String(b.created_at)) || a.id.localeCompare(b.id);
 const itemsOf = id => S.items.filter(i => i.list_id === id).sort(cmpItem);
+const secsOf = id => S.sections.filter(x => x.list_id === id).sort(cmpSec);
+const itemsIn = (listId, secId) => itemsOf(listId).filter(i => (i.section_id || null) === (secId || null));
 function listPreview(L) {
   const its = itemsOf(L.id); if (!its.length) return "Sem itens";
   const open = its.filter(i => !i.done).map(i => i.text);
   return open.length ? open.join(", ") : "Tudo feito";
 }
-const SUG_LISTAS = [["🎬", "Filmes e séries"], ["🍽️", "Restaurantes"], ["✈️", "Viagens"], ["🛒", "Compras"], ["🎁", "Presentes"], ["🏠", "Casa"]];
+/* modelos de lista: seções prontas (sempre dá para editar depois) */
+const anoAtual = () => new Date().getFullYear();
+const MODELOS = [
+  { k: "filmes", e: "🎬", t: "Filmes", d: "Os que vocês assistiram, por ano", rated: true, kw: ["filme"], secs: () => { const a = ["Favoritos"]; for (let y = anoAtual(); y >= 2023; y--) a.push(String(y)); return a; } },
+  { k: "series", e: "📺", t: "Séries", d: "Assistindo, favoritas e as que querem ver", rated: true, kw: ["serie"], secs: () => ["Assistindo", "Favoritas", "Queremos ver"] },
+  { k: "restaurantes", e: "🍽️", t: "Restaurantes", d: "Os favoritos e os que querem conhecer", rated: true, kw: ["restaurante"], secs: () => ["Favoritos", "Wishlist"] },
+  { k: "viagens", e: "✈️", t: "Viagens", d: "As que já fizeram e as que sonham fazer", rated: false, kw: ["viage"], secs: () => ["Viagens feitas", "Wishlist"] },
+  { k: "livros", e: "📚", t: "Livros", d: "Lendo, lidos e os que querem ler", rated: true, kw: ["livro"], secs: () => ["Lendo", "Lidos", "Queremos ler"] },
+  { k: "programas", e: "🎟️", t: "Programas a dois", d: "O que querem fazer e o que já fizeram", rated: false, kw: ["programa"], secs: () => ["Queremos fazer", "Já fizemos"] },
+  { k: "presentes", e: "🎁", t: "Presentes", d: "Ideias para cada um", rated: false, kw: ["presente"], secs: () => { const n = S.members.slice(0, 2).map(m => m.display_name || "alguém"); if (n.length < 2) n.push("quem você ama"); return n.map(x => `Ideias para ${x}`.slice(0, 80)); } },
+  { k: "compras", e: "🛒", t: "Compras", d: "Por seção do mercado", rated: false, kw: ["compra"], secs: () => ["Hortifrúti", "Mercearia", "Limpeza", "Casa"] }
+];
+const semAcento = t => String(t).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 const semEmoji = t => String(t).replace(/^[^\p{L}\p{N}]+/u, "").trim().toLowerCase();
+const modeloDaLista = L => { const t = semAcento(L.title); return MODELOS.find(m => m.kw.some(w => t.includes(w))) || null; };
 function sugestoesHTML() {
-  const tem = new Set(S.lists.map(l => semEmoji(l.title)));
-  const falta = SUG_LISTAS.map((x, i) => [x, i]).filter(([x]) => !tem.has(x[1].toLowerCase()));
+  const tem = new Set(S.lists.map(l => (modeloDaLista(l) || {}).k));
+  const falta = MODELOS.filter(m => !tem.has(m.k));
   if (!falta.length) return "";
-  return `<div class="ngroup-h">Sugestões</div><div class="sugs">${falta.map(([x, i]) => `<button class="sug" data-sug="${i}"><span class="e" aria-hidden="true">${x[0]}</span>${esc(x[1])}</button>`).join("")}</div><p class="sug-h">Toque para criar a lista na hora.</p>`;
+  return `<div class="ngroup-h">Sugestões</div><div class="sugs">${falta.map(m => `<button class="sug" data-sug="${m.k}"><span class="e" aria-hidden="true">${m.e}</span>${esc(m.t)}</button>`).join("")}</div><p class="sug-h">Toque para criar a lista na hora, já com as seções.</p>`;
 }
 function listasHTML() {
   if (UI.openList !== null) { const html = noteHTML(); if (html) return html; UI.openList = null; }
@@ -674,17 +711,30 @@ function listasHTML() {
     ${sugestoesHTML()}
   </div>`;
 }
+const STAR = '<path d="m12 3.5 2.6 5.4 5.9.8-4.3 4.1 1 5.9L12 17l-5.2 2.7 1-5.9L3.5 9.7l5.9-.8Z"/>';
+IC.star = STAR;
+function itemHTML(it, L) {
+  const stars = L.rated ? `<div class="stars" role="group" aria-label="Nota de 1 a 5">${[1, 2, 3, 4, 5].map(n => `<button type="button" class="star ${it.rating >= n ? "on" : ""}" data-rate="${it.id}" data-n="${n}" aria-pressed="${it.rating === n}" aria-label="Nota ${n} de 5: ${esc(it.text)}">${ic("star", 20, 1.6)}</button>`).join("")}</div>` : "";
+  return `<div class="citem ${it.done ? "done" : ""}" data-item="${it.id}"><button class="cbox" data-check="${it.id}" aria-pressed="${it.done}" aria-label="${it.done ? "Desmarcar" : "Marcar"}: ${esc(it.text)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></button><div class="body"><textarea class="tx-in" rows="1" maxlength="5000" data-edit="${it.id}" enterkeyhint="done" autocomplete="off" aria-label="Texto do item">${esc(it.text)}</textarea>${stars}</div><button class="grip" data-grip="${it.id}" aria-label="Arrastar para mudar a ordem: ${esc(it.text)}">${ic("grip", 20, 2)}</button><button class="del" data-delitem="${it.id}" aria-label="Apagar item: ${esc(it.text)}">${ic("x", 18, 2)}</button></div>`;
+}
+const addRowHTML = secId => `<div class="nadd"><span class="cbox" aria-hidden="true"></span><textarea class="nitem" rows="1" data-sec="${esc(secId || "")}" placeholder="Novo item" aria-label="Novo item" maxlength="5000" enterkeyhint="done" autocomplete="off" autocapitalize="sentences"></textarea></div>`;
 function noteHTML() {
   const L = S.lists.find(l => l.id === UI.openList); if (!L) return "";
-  const its = itemsOf(L.id);
+  const secs = secsOf(L.id), solto = itemsIn(L.id, null), modelo = !secs.length ? modeloDaLista(L) : null;
+  const blocos = secs.map(x => `<div class="sec" data-sec="${x.id}">
+      <div class="shead" data-shead="${x.id}"><input class="sec-in" data-sec-edit="${x.id}" value="${esc(x.title)}" maxlength="80" autocomplete="off" enterkeyhint="done" aria-label="Nome da seção"><button class="sgrip" data-sgrip="${x.id}" aria-label="Arrastar a seção ${esc(x.title)}">${ic("grip", 20, 2)}</button><button class="del" data-delsec="${x.id}" aria-label="Apagar a seção ${esc(x.title)}">${ic("x", 18, 2)}</button></div>
+      ${itemsIn(L.id, x.id).map(it => itemHTML(it, L)).join("")}${addRowHTML(x.id)}</div>`).join("");
   return `<div class="lnote">
     <div class="nbar"><button data-act="voltarlista" class="back" style="color:var(--red);font-size:16px;font-weight:400">${ic("back", 20, 2.4)}Listas</button>
-      <span class="icos"><button data-act="copiarlista" aria-label="Copiar lista">${ic("copy", 21, 1.9)}</button><button data-act="fixar" aria-pressed="${L.pinned}" aria-label="${L.pinned ? "Desafixar lista" : "Fixar lista"}">${ic(L.pinned ? "pinfill" : "pin", 21, 1.9)}</button><button data-act="apagarlista" aria-label="Apagar lista">${ic("trash", 21, 1.9)}</button></span></div>
+      <span class="icos"><button data-act="darnota" aria-pressed="${!!L.rated}" aria-label="${L.rated ? "Desligar as notas" : "Dar nota aos itens"}">${ic("star", 21, 1.9)}</button><button data-act="copiarlista" aria-label="Copiar lista">${ic("copy", 21, 1.9)}</button><button data-act="fixar" aria-pressed="${L.pinned}" aria-label="${L.pinned ? "Desafixar lista" : "Fixar lista"}">${ic(L.pinned ? "pinfill" : "pin", 21, 1.9)}</button><button data-act="apagarlista" aria-label="Apagar lista">${ic("trash", 21, 1.9)}</button></span></div>
     <div class="lnote-date">Atualizada ${esc(relDay(L.updated_at))}</div>
     <label class="sr" for="ltitle" style="position:absolute;left:-9999px">Título da lista</label>
-    <input class="title-in" id="ltitle" value="${esc(L.title)}" maxlength="120" autocomplete="off" enterkeyhint="done">
-    ${its.length ? its.map(it => `<div class="citem ${it.done ? "done" : ""}" data-item="${it.id}"><button class="cbox" data-check="${it.id}" aria-pressed="${it.done}" aria-label="${it.done ? "Desmarcar" : "Marcar"}: ${esc(it.text)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></button><div class="body"><textarea class="tx-in" rows="1" maxlength="200" data-edit="${it.id}" enterkeyhint="done" autocomplete="off" aria-label="Texto do item">${esc(it.text)}</textarea></div><button class="grip" data-grip="${it.id}" aria-label="Arrastar para mudar a ordem: ${esc(it.text)}">${ic("grip", 20, 2)}</button><button class="del" data-delitem="${it.id}" aria-label="Apagar item: ${esc(it.text)}">${ic("x", 18, 2)}</button></div>`).join("") : `<p class="empty-note">Lista vazia. Escreva o primeiro item aqui embaixo.</p>`}
-    <form class="nadd" id="nadd"><span class="cbox" aria-hidden="true"></span><label for="nitem" style="position:absolute;left:-9999px">Novo item</label><input id="nitem" placeholder="Novo item" autocomplete="off" maxlength="200" enterkeyhint="done"></form>
+    <input class="title-in" id="ltitle" value="${esc(L.title)}" maxlength="200" autocomplete="off" enterkeyhint="done">
+    <div class="sec sec0">${solto.map(it => itemHTML(it, L)).join("")}${!secs.length ? addRowHTML("") : ""}</div>
+    ${!secs.length && !solto.length ? `<p class="empty-note">Lista vazia. Escreva o primeiro item acima, ou cole uma lista inteira.</p>` : ""}
+    ${blocos}
+    <button class="nsec" data-act="novasecao">${ic("plus", 18, 2.2)}Nova seção</button>
+    ${modelo ? `<button class="org-hint" data-act="organizar"><b>Organizar em seções</b><span>${esc(modelo.secs().join(", "))}</span></button>` : ""}
   </div>`;
 }
 
@@ -1158,12 +1208,30 @@ async function touchList(id) {
   const L = S.lists.find(l => l.id === id); if (L) L.updated_at = now;
   sb.from("lists").update({ updated_at: now }).eq("id", id).then(() => { });
 }
-async function newList(title) {
+const nextSecPos = listId => secsOf(listId).reduce((mx, x) => Math.max(mx, x.position), 0) + 1;
+async function addSections(L, titles) {
+  const base = nextSecPos(L.id);
+  const rows = await q(sb.from("list_sections").insert(titles.map((t, i) => ({ list_id: L.id, couple_id: S.couple.id, title: String(t).slice(0, 80), position: base + i }))).select());
+  S.sections.push(...rows);
+}
+/* modelo = um item de MODELOS, ou null para lista em branco */
+async function newList(modelo) {
   try {
-    const L = await q(sb.from("lists").insert({ couple_id: S.couple.id, title: title || "Nova lista" }).select().single());
-    S.lists.unshift(L); UI.openList = L.id; render();
-    const t = $("ltitle"); if (t && !title) { t.focus(); t.select(); }
+    const L = await q(sb.from("lists").insert({ couple_id: S.couple.id, title: modelo ? `${modelo.e} ${modelo.t}` : "Nova lista", rated: modelo ? modelo.rated : false }).select().single());
+    S.lists.unshift(L);
+    if (modelo) await addSections(L, modelo.secs());
+    UI.openList = L.id; closeSheet(); render();
+    const t = $("ltitle"); if (t && !modelo) { t.focus(); t.select(); }
   } catch (e) { toast(friendly(e)); }
+}
+function openNewList() {
+  openSheet({
+    focus: false,
+    view: () => `<h3>Nova lista</h3><p class="hint">Escolha um modelo, com as seções prontas, ou comece em branco. Dá para mudar as seções depois.</p>
+      <div class="models">${MODELOS.map(m => `<button type="button" class="model" data-s="modelo" data-k="${m.k}"><span class="e" aria-hidden="true">${m.e}</span><span><b>${esc(m.t)}</b><span class="d">${esc(m.d)}</span></span></button>`).join("")}
+      <button type="button" class="model" data-s="branco"><span class="e" aria-hidden="true">${ic("edit", 20, 1.9)}</span><span><b>Lista em branco</b><span class="d">Sem seções, só o que você escrever</span></span></button></div>`,
+    on: { modelo: t => newList(MODELOS.find(m => m.k === t.dataset.k)), branco: () => newList(null) }
+  });
 }
 async function toggleItem(id) {
   const it = S.items.find(i => i.id === id); if (!it) return;
@@ -1176,40 +1244,83 @@ async function deleteItem(id) {
   try { await q(sb.from("list_items").delete().eq("id", id)); S.items = S.items.filter(i => i.id !== id); touchList(it.list_id); render(true); }
   catch (e) { toast(friendly(e)); }
 }
-const nextPos = listId => itemsOf(listId).reduce((mx, i) => Math.max(mx, i.position), 0) + 1;
-async function addItem(text) {
+async function setRating(id, n) {
+  const it = S.items.find(i => i.id === id); if (!it) return;
+  const old = it.rating, val = old === n ? null : n;
+  it.rating = val; render(true);
+  try { await q(sb.from("list_items").update({ rating: val }).eq("id", id)); touchList(it.list_id); }
+  catch (e) { it.rating = old; render(true); toast(friendly(e)); }
+}
+async function toggleRated() {
   const L = S.lists.find(l => l.id === UI.openList); if (!L) return;
-  const it = await q(sb.from("list_items").insert({ list_id: L.id, couple_id: S.couple.id, text, position: nextPos(L.id) }).select().single());
-  S.items.push(it); touchList(L.id); render(true);
-  setTimeout(() => { const n = $("nitem"); if (n) n.focus(); }, 30);
+  const old = L.rated; L.rated = !old; render(true);
+  try { await q(sb.from("lists").update({ rated: L.rated }).eq("id", L.id)); toast(L.rated ? "Notas ligadas. Toque nas estrelas." : "Notas desligadas."); }
+  catch (e) { L.rated = old; render(true); toast(friendly(e)); }
 }
-/* texto colado com várias linhas: um item por linha, sem marcadores, na ordem colada */
-/* texto vindo da área de transferência: sempre texto puro. Se só vier HTML (ou o "texto" for HTML cru), converte para linhas */
-function htmlToText(h) {
-  const doc = new DOMParser().parseFromString(String(h), "text/html");
-  doc.querySelectorAll("script,style,head,title").forEach(n => n.remove());
-  doc.querySelectorAll("br").forEach(b => b.replaceWith("\n"));
-  doc.querySelectorAll("div,p,li,ul,ol,h1,h2,h3,h4,h5,h6,tr,blockquote,pre").forEach(n => n.append("\n"));
-  return doc.body.textContent || "";
-}
-function clipText(e) {
-  const cd = e.clipboardData || window.clipboardData; if (!cd) return "";
-  let t = cd.getData("text/plain") || "";
-  const h = cd.getData("text/html");
-  if (!t.trim() && h) t = htmlToText(h);
-  else if (/<\/?(div|br|p|span|li|ul|ol|b|i|a)\b[^>]*>/i.test(t)) t = htmlToText(t);
-  return t;
-}
-const MARCA = /^(?:[-*•◦‣⁃·▪▫●○◌–—]\s+|\[[ xX✓✔]?\]\s*|[☐☑☒□■✓✔✅]\s*)/;
-/* uma linha de texto sem marcador de checklist/lista no começo */
-const limpaLinha = l => { let t = String(l).replace(/[\u00a0\u200b\ufeff]/g, " ").trim(), prev; do { prev = t; t = t.replace(MARCA, "").trim(); } while (t !== prev); return t.slice(0, 200); };
-function parseLines(txt) { return String(txt).split(/\r?\n/).map(limpaLinha).filter(Boolean); }
-async function addMany(lines) {
+const nextPos = listId => itemsOf(listId).reduce((mx, i) => Math.max(mx, i.position), 0) + 1;
+const focusAdd = secId => setTimeout(() => { const n = view.querySelector(`.nitem[data-sec="${secId || ""}"]`); if (n) n.focus({ preventScroll: true }); }, 30);
+async function addMany(lines, secId) {
   const L = S.lists.find(l => l.id === UI.openList); if (!L) return;
   const base = nextPos(L.id);
-  const rows = await q(sb.from("list_items").insert(lines.map((text, i) => ({ list_id: L.id, couple_id: S.couple.id, text, position: base + i }))).select());
-  S.items.push(...rows); touchList(L.id); render(true);
-  setTimeout(() => { const n = $("nitem"); if (n) n.focus(); }, 30);
+  const rows = await q(sb.from("list_items").insert(lines.map((text, i) => ({ list_id: L.id, couple_id: S.couple.id, text: text.slice(0, 5000), position: base + i, section_id: secId || null }))).select());
+  S.items.push(...rows); touchList(L.id); render(true); focusAdd(secId);
+}
+const addItem = (text, secId) => addMany([text], secId);
+
+/* ---- colar e copiar: sempre texto puro ---- */
+/* texto vindo da área de transferência: sempre texto puro. HTML vira linhas (um item por bloco) */
+function htmlToText(h) {
+  const doc = new DOMParser().parseFromString(String(h), "text/html");
+  doc.querySelectorAll("script,style,head,title,meta,input").forEach(n => n.remove());
+  doc.querySelectorAll("br").forEach(b => b.replaceWith("\n"));
+  doc.querySelectorAll("div,p,li,ul,ol,h1,h2,h3,h4,h5,h6,tr,blockquote,pre,section,article").forEach(n => n.append("\n"));
+  return doc.body.textContent || "";
+}
+/* RTF simples: parágrafos viram linhas; tabelas de fontes e cores saem */
+function rtfToText(r) {
+  let t = String(r);
+  for (const d of ["fonttbl", "colortbl", "stylesheet", "info", "expandedcolortbl", "listtable", "listoverridetable"]) {
+    for (let i = t.indexOf("{\\" + d); i >= 0; i = t.indexOf("{\\" + d)) {
+      let depth = 0, j = i;
+      for (; j < t.length; j++) { if (t[j] === "{") depth++; else if (t[j] === "}" && --depth === 0) break; }
+      t = t.slice(0, i) + t.slice(j + 1);
+    }
+  }
+  return t.replace(/\\pard?\b|\\par\b|\\line\b/g, "\n").replace(/\\'([0-9a-f]{2})/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/\\u(-?\d+)\??/g, (_, n) => String.fromCharCode(+n < 0 ? +n + 65536 : +n)).replace(/\\[a-z]+-?\d* ?/gi, "").replace(/[{}]/g, "");
+}
+const HTMLISH = /<\/?(div|br|p|span|li|ul|ol|b|i|a|body|html|meta)\b[^>]*>/i;
+/* lê TODOS os tipos que vierem e fica com o que tiver mais linhas úteis (empate: texto puro) */
+function clipLines(cd) {
+  if (!cd) return [];
+  const types = [...new Set(["text/plain", "text/html", "text/rtf", "text/uri-list", ...Array.from(cd.types || [])])];
+  let best = [];
+  for (const ty of types) {
+    let v = ""; try { v = cd.getData(ty) || ""; } catch (x) { }
+    if (!v || !/^text\//.test(ty)) continue;
+    let txt = v;
+    if (ty === "text/html") txt = htmlToText(v);
+    else if (/rtf/.test(ty)) txt = rtfToText(v);
+    else if (ty === "text/uri-list") txt = v.split(/\r?\n/).filter(l => l && l[0] !== "#").join("\n");
+    else if (HTMLISH.test(v)) txt = htmlToText(v);
+    const lines = parseLines(txt);
+    if (lines.length > best.length) best = lines;
+  }
+  return best;
+}
+/* marcadores de lista/checklist no começo da linha: ◦ • - * – — ☐ ☑ ✓ ✔ ✅ ⬜ [ ] [x] e números "1." "1)" */
+const MARCA = /^(?:[-*•◦‣⁃·▪▫●○◌◯–—]\s+|\[[ xX✓✔]?\]\s*|[☐☑☒□■✓✔✅⬜☑️✔️]\s*|\d{1,3}[.)]\s+)/;
+const INVIS = /[\u00a0\u1680\u2000-\u200d\u202f\u205f\u2060\u3000\ufeff]/g;
+/* uma linha de texto sem marcador de checklist/lista no começo e sem espaços invisíveis */
+const limpaLinha = l => { let t = String(l).replace(INVIS, " ").trim(), prev; do { prev = t; t = t.replace(MARCA, "").trim(); } while (t !== prev); return t.slice(0, 5000); };
+const QUEBRA = /\r\n|[\n\r\u2028\u2029\u0085\u000b\u000c]/;
+function parseLines(txt) { return String(txt).split(new RegExp(QUEBRA.source)).map(limpaLinha).filter(Boolean); }
+const temQuebra = v => new RegExp(QUEBRA.source).test(String(v));
+/* aviso de excesso: no máximo 200 itens por colagem */
+async function colarLinhas(lines, secId) {
+  const cut = lines.length > 200;
+  try { await addMany(lines.slice(0, 200), secId); if (cut) toast("Entraram os 200 primeiros. Cole o resto de novo."); }
+  catch (err) { toast(friendly(err)); }
 }
 async function saveItemText(id, el) {
   const it = S.items.find(i => i.id === id); if (!it) return;
@@ -1221,37 +1332,129 @@ async function saveItemText(id, el) {
   catch (e) { it.text = old; if (el.isConnected) { el.value = old; fitTA(el); } toast(friendly(e)); }
 }
 const fitTA = el => { el.style.height = "auto"; el.style.height = el.scrollHeight + "px"; };
-const fitAll = () => view.querySelectorAll(".tx-in").forEach(fitTA);
+const fitAll = () => view.querySelectorAll(".tx-in,.nitem").forEach(fitTA);
+/* adiciona o que está escrito no campo de novo item (Enter, ou "Retorno" no celular) */
+let ADDING = false;
+async function submitNovo(el) {
+  const lines = parseLines(el.value); if (!lines.length || ADDING) { if (!lines.length) el.value = ""; return; }
+  ADDING = true; el.readOnly = true;
+  try { await (lines.length > 1 ? colarLinhas(lines, el.dataset.sec) : addItem(lines[0], el.dataset.sec)); }
+  catch (err) { toast(friendly(err)); if (el.isConnected) el.readOnly = false; }
+  ADDING = false;
+}
 
-/* mudar a ordem: troca o item de lugar e grava só a posição dele (ou renumera a lista se os vizinhos ficaram colados) */
-async function moveItem(id, to) {
+/* ---- seções ---- */
+async function newSection() {
+  const L = S.lists.find(l => l.id === UI.openList); if (!L) return;
+  try {
+    const rows = await q(sb.from("list_sections").insert({ list_id: L.id, couple_id: S.couple.id, title: "Nova seção", position: nextSecPos(L.id) }).select());
+    S.sections.push(...rows); touchList(L.id); render(true);
+    setTimeout(() => { const n = view.querySelector(`[data-sec-edit="${rows[0].id}"]`); if (n) { n.focus(); n.select(); n.scrollIntoView({ block: "center" }); } }, 40);
+  } catch (e) { toast(friendly(e)); }
+}
+async function renameSection(id, el) {
+  const x = S.sections.find(s => s.id === id); if (!x) return;
+  const v = el.value.replace(/\s+/g, " ").trim();
+  if (!v) { el.value = x.title; return; }
+  if (v === x.title) { el.value = v; return; }
+  const old = x.title; x.title = v; el.value = v;
+  try { await q(sb.from("list_sections").update({ title: v }).eq("id", id)); touchList(x.list_id); }
+  catch (e) { x.title = old; if (el.isConnected) el.value = old; toast(friendly(e)); }
+}
+function deleteSection(id) {
+  const x = S.sections.find(s => s.id === id); if (!x) return;
+  const its = itemsIn(x.list_id, id), done = () => { closeSheet(); render(true); };
+  if (!its.length) { askConfirm(`Apagar a seção ${x.title}?`, "Ela está vazia.", "Apagar seção", async () => { await q(sb.from("list_sections").delete().eq("id", id)); S.sections = S.sections.filter(s => s.id !== id); touchList(x.list_id); done(); toast("Seção apagada."); }); return; }
+  openSheet({
+    focus: false,
+    view: () => `<h3>Apagar a seção ${esc(x.title)}?</h3><p class="hint">Ela tem ${plural(its.length, "item", "itens")}. Os itens podem ficar na lista, sem seção, ou sair junto.</p>
+      <div class="btns" style="flex-direction:column"><button class="btn" data-s="manter">Apagar a seção e manter os itens</button><button class="btn warn" data-s="tudo">Apagar a seção e os itens</button><button class="btn ghost" data-s="no">Cancelar</button></div>`,
+    on: {
+      manter: async () => { await q(sb.from("list_sections").delete().eq("id", id)); S.items.forEach(i => { if (i.section_id === id) i.section_id = null; }); S.sections = S.sections.filter(s => s.id !== id); touchList(x.list_id); done(); toast("Seção apagada. Os itens ficaram na lista."); },
+      tudo: async () => { await q(sb.from("list_items").delete().eq("section_id", id)); await q(sb.from("list_sections").delete().eq("id", id)); S.items = S.items.filter(i => i.section_id !== id); S.sections = S.sections.filter(s => s.id !== id); touchList(x.list_id); done(); toast("Seção e itens apagados."); },
+      no: () => closeSheet()
+    }
+  });
+}
+/* sugestão para listas sem seção: aplica as seções do modelo que combina com o título; os itens não mudam de lugar */
+function organizar() {
+  const L = S.lists.find(l => l.id === UI.openList), m = L && modeloDaLista(L); if (!m) return;
+  const nomes = m.secs();
+  openSheet({
+    focus: false,
+    view: () => `<h3>Organizar em seções?</h3><p class="hint">Vamos criar: ${esc(nomes.join(", "))}.${m.rated && !L.rated ? " Também ligamos as estrelas de nota." : ""} Seus itens continuam na lista, sem seção, e vocês movem para onde quiserem.</p>
+      <div class="btns"><button class="btn ghost" data-s="no">Agora não</button><button class="btn" data-s="yes">Criar seções</button></div>`,
+    on: {
+      no: () => closeSheet(),
+      yes: async () => {
+        await addSections(L, nomes);
+        if (m.rated && !L.rated) { L.rated = true; await q(sb.from("lists").update({ rated: true }).eq("id", L.id)); }
+        touchList(L.id); closeSheet(); render(true); toast("Seções criadas.");
+      }
+    }
+  });
+}
+
+/* ---- mudar de lugar: item (dentro da seção ou para outra) e seção ---- */
+function midpoint(prev, next) {
+  if (!prev && !next) return 1;
+  if (!prev) return next.position - 1;
+  if (!next) return prev.position + 1;
+  return (prev.position + next.position) / 2;
+}
+/* põe o item na seção secId, entre os itens prevId e nextId (já dessa seção) */
+async function moveItemTo(id, secId, prevId, nextId) {
   const it = S.items.find(i => i.id === id); if (!it) return;
-  const all = itemsOf(it.list_id), from = all.findIndex(i => i.id === id);
-  if (from < 0 || to < 0 || to >= all.length || to === from) return;
-  const rest = all.filter(i => i.id !== id), prev = rest[to - 1], next = rest[to];
-  const before = new Map(all.map(i => [i.id, i.position]));
-  let pos;
-  if (!prev) pos = next.position - 1;
-  else if (!next) pos = prev.position + 1;
-  else pos = (prev.position + next.position) / 2;
+  secId = secId || null;
+  const target = itemsIn(it.list_id, secId).filter(i => i.id !== id);
+  const prev = prevId ? target.find(i => i.id === prevId) : null, next = nextId ? target.find(i => i.id === nextId) : null;
+  const to = prev ? target.indexOf(prev) + 1 : next ? target.indexOf(next) : target.length;
+  const mesmaSecao = (it.section_id || null) === secId;
+  if (mesmaSecao && itemsIn(it.list_id, secId).findIndex(i => i.id === id) === to) return;
+  const before = new Map(S.items.filter(i => i.list_id === it.list_id).map(i => [i.id, { p: i.position, s: i.section_id || null }]));
   const gap = prev && next ? next.position - prev.position : 1;
-  let changed;
+  let changed = [it];
   if (gap < 1e-6) {
-    rest.splice(to, 0, it); rest.forEach((x, i) => { x.position = i + 1; });
-    changed = rest.filter(x => x.position !== before.get(x.id));
-  } else { it.position = pos; changed = [it]; }
+    const seq = [...target]; seq.splice(to, 0, it); seq.forEach((x, i) => { x.position = i + 1; });
+    changed = seq.filter(x => x === it || x.position !== before.get(x.id).p);
+  } else it.position = midpoint(prev, next);
+  it.section_id = secId;
   render(true);
-  try { await Promise.all(changed.map(x => q(sb.from("list_items").update({ position: x.position }).eq("id", x.id)))); touchList(it.list_id); }
-  catch (e) { all.forEach(x => { x.position = before.get(x.id); }); render(true); toast(friendly(e)); }
+  try { await Promise.all(changed.map(x => q(sb.from("list_items").update(x === it ? { section_id: secId, position: x.position } : { position: x.position }).eq("id", x.id)))); touchList(it.list_id); }
+  catch (e) { S.items.forEach(i => { const b = before.get(i.id); if (b) { i.position = b.p; i.section_id = b.s; } }); render(true); toast(friendly(e)); }
+}
+/* teclado: sobe ou desce o item dentro da própria seção */
+function moveItem(id, delta) {
+  const it = S.items.find(i => i.id === id); if (!it) return Promise.resolve();
+  const lista = itemsIn(it.list_id, it.section_id), i = lista.findIndex(x => x.id === id), to = i + delta;
+  if (to < 0 || to >= lista.length) return Promise.resolve();
+  const resto = lista.filter(x => x.id !== id);
+  return moveItemTo(id, it.section_id, resto[to - 1] && resto[to - 1].id, resto[to] && resto[to].id);
+}
+async function moveSection(id, to) {
+  const x = S.sections.find(s => s.id === id); if (!x) return;
+  const all = secsOf(x.list_id), from = all.findIndex(s => s.id === id);
+  if (from < 0 || to < 0 || to >= all.length || to === from) return;
+  const rest = all.filter(s => s.id !== id), prev = rest[to - 1], next = rest[to];
+  const before = new Map(all.map(s => [s.id, s.position]));
+  let changed = [x];
+  if (prev && next && next.position - prev.position < 1e-6) { rest.splice(to, 0, x); rest.forEach((s, i) => { s.position = i + 1; }); changed = rest.filter(s => s.position !== before.get(s.id)); }
+  else x.position = midpoint(prev, next);
+  render(true);
+  try { await Promise.all(changed.map(s => q(sb.from("list_sections").update({ position: s.position }).eq("id", s.id)))); touchList(x.list_id); }
+  catch (e) { all.forEach(s => { s.position = before.get(s.id); }); render(true); toast(friendly(e)); }
 }
 let DRAG = null;
-function startDrag(e, grip) {
+/* kind "item": arrasta uma linha por entre todas as linhas, cabeçalhos e campos de novo item; kind "sec": arrasta o bloco da seção */
+function startDrag(e, grip, kind) {
   if (DRAG || (e.button != null && e.button !== 0)) return;
-  const row = grip.closest(".citem"); if (!row) return;
-  const rows = [...row.parentElement.querySelectorAll(".citem[data-item]")], i0 = rows.indexOf(row);
-  DRAG = { id: row.dataset.item, row, rows, i0, to: i0, y0: e.clientY, y: e.clientY, sc0: view.scrollTop, h: row.offsetHeight, mids: rows.map(r => r.offsetTop + r.offsetHeight / 2), raf: 0, grip, pid: e.pointerId };
+  const unit = kind === "sec" ? grip.closest(".sec") : grip.closest(".citem"); if (!unit) return;
+  const nodes = kind === "sec" ? [...view.querySelectorAll(".lnote .sec[data-sec]")] : [...view.querySelectorAll(".lnote .citem, .lnote .shead, .lnote .nadd")];
+  const i0 = nodes.indexOf(unit), sc = view.scrollTop;
+  const mid = r => { const b = r.getBoundingClientRect(); return b.top + b.height / 2 + sc; };
+  DRAG = { kind, unit, nodes, i0, to: i0, y0: e.clientY, y: e.clientY, sc0: sc, h: unit.getBoundingClientRect().height, mids: nodes.map(mid), raf: 0, grip, pid: e.pointerId };
   try { grip.setPointerCapture(e.pointerId); } catch (x) { }
-  row.classList.add("dragging"); rows.forEach(r => { if (r !== row) r.classList.add("shifting"); });
+  unit.classList.add("dragging"); nodes.forEach(r => { if (r !== unit) r.classList.add("shifting"); });
   grip.addEventListener("pointermove", dragMove); grip.addEventListener("pointerup", dragEnd); grip.addEventListener("pointercancel", dragEnd);
   dragLoop();
 }
@@ -1260,8 +1463,8 @@ function dragPlace() {
   const dy = (D.y - D.y0) + (view.scrollTop - D.sc0), center = D.mids[D.i0] + dy;
   let to = 0; D.mids.forEach((m, j) => { if (j !== D.i0 && m < center) to++; });
   D.to = to;
-  D.row.style.transform = `translateY(${dy}px)`;
-  D.rows.forEach((r, j) => {
+  D.unit.style.transform = `translateY(${dy}px)`;
+  D.nodes.forEach((r, j) => {
     if (j === D.i0) return;
     const shift = D.to > D.i0 && j > D.i0 && j <= D.to ? -D.h : D.to < D.i0 && j >= D.to && j < D.i0 ? D.h : 0;
     r.style.transform = shift ? `translateY(${shift}px)` : "";
@@ -1282,11 +1485,22 @@ function dragEnd(e) {
   const D = DRAG; if (!D || (e && e.pointerId !== D.pid)) return;
   DRAG = null; cancelAnimationFrame(D.raf);
   D.grip.removeEventListener("pointermove", dragMove); D.grip.removeEventListener("pointerup", dragEnd); D.grip.removeEventListener("pointercancel", dragEnd);
-  D.rows.forEach(r => { r.style.transform = ""; r.classList.remove("dragging", "shifting"); });
-  if (e && e.type === "pointercancel") return;
-  if (D.to !== D.i0) moveItem(D.id, D.to);
+  D.nodes.forEach(r => { r.style.transform = ""; r.classList.remove("dragging", "shifting"); });
+  if ((e && e.type === "pointercancel") || D.to === D.i0) return;
+  if (D.kind === "sec") { moveSection(D.unit.dataset.sec, D.to); return; }
+  /* item: a seção e os vizinhos saem da ordem em que ficou */
+  const order = D.nodes.filter((_, j) => j !== D.i0); order.splice(D.to, 0, D.unit);
+  const k = order.indexOf(D.unit); let sec = null, prev = null, next = null;
+  for (let j = 0; j < k; j++) { const n = order[j]; if (n.classList.contains("shead")) { sec = n.dataset.shead; prev = null; } else if (n.classList.contains("citem")) prev = n; }
+  for (let j = k + 1; j < order.length; j++) { const n = order[j]; if (n.classList.contains("shead")) break; if (n.classList.contains("citem")) { next = n; break; } }
+  moveItemTo(D.unit.dataset.item, sec, prev && prev.dataset.item, next && next.dataset.item);
 }
-/* copia título + itens, um por linha, em texto puro (sem marcas: cola limpo no Notas e no Us) */
+/* a lista como texto puro: título, itens soltos, e cada seção com o nome em uma linha (sem marcas: cola limpo no Notas e no Us) */
+function listText(L) {
+  const out = [L.title, ...itemsIn(L.id, null).map(i => i.text)];
+  secsOf(L.id).forEach(x => { out.push("", x.title, ...itemsIn(L.id, x.id).map(i => i.text)); });
+  return out.join("\n");
+}
 function copyText(txt) {
   return new Promise(res => {
     const fallback = () => {
@@ -1299,7 +1513,7 @@ function copyText(txt) {
 }
 async function copyList() {
   const L = S.lists.find(l => l.id === UI.openList); if (!L) return;
-  const ok = await copyText([L.title, ...itemsOf(L.id).map(i => i.text)].join("\n"));
+  const ok = await copyText(listText(L));
   toast(ok ? "Lista copiada." : "Não consegui copiar. Selecione os itens e copie.");
 }
 async function togglePin() {
@@ -1311,7 +1525,7 @@ function deleteList() {
   const L = S.lists.find(l => l.id === UI.openList); if (!L) return;
   askConfirm(`Apagar a lista ${L.title}?`, "Os itens somem para os dois e não dá para desfazer.", "Apagar lista", async () => {
     await q(sb.from("lists").delete().eq("id", L.id));
-    S.lists = S.lists.filter(l => l.id !== L.id); S.items = S.items.filter(i => i.list_id !== L.id);
+    S.lists = S.lists.filter(l => l.id !== L.id); S.items = S.items.filter(i => i.list_id !== L.id); S.sections = S.sections.filter(x => x.list_id !== L.id);
     UI.openList = null; closeSheet(); render(); toast("Lista apagada.");
   });
 }
@@ -1536,7 +1750,7 @@ $("tabbar").addEventListener("click", e => {
 });
 let sugBusy = false;
 $("main").addEventListener("click", e => {
-  const t = e.target.closest("[data-media],[data-act],[data-seg],[data-list],[data-check],[data-delitem],[data-day],[data-mon],[data-trip],[data-place],[data-delev],[data-ev],[data-sug]");
+  const t = e.target.closest("[data-media],[data-act],[data-seg],[data-list],[data-check],[data-delitem],[data-day],[data-mon],[data-trip],[data-place],[data-delev],[data-ev],[data-sug],[data-rate],[data-delsec]");
   if (!t) return;
   const d = t.dataset;
   if (d.media) return openViewer(d.media);
@@ -1548,7 +1762,9 @@ $("main").addEventListener("click", e => {
   if (d.delitem) return deleteItem(d.delitem);
   if (d.delev) return deleteEvent(d.delev);
   if (d.ev) { const x = S.events.find(v => v.id === d.ev); if (x && x.auto_key) return toast("Essa data vem do perfil. Para mudar, toque em Editar perfil."); return x && openEventForm(x); }
-  if (d.sug) { if (sugBusy) return; const x = SUG_LISTAS[+d.sug]; if (!x) return; sugBusy = true; return newList(`${x[0]} ${x[1]}`).finally(() => { sugBusy = false; }); }
+  if (d.rate) return setRating(d.rate, +d.n);
+  if (d.delsec) return deleteSection(d.delsec);
+  if (d.sug) { if (sugBusy) return; const x = MODELOS.find(m => m.k === d.sug); if (!x) return; sugBusy = true; return newList(x).finally(() => { sugBusy = false; }); }
   if (d.day) { UI.selDay = d.day; return render(true); }
   if (d.mon) {
     UI.calM += +d.mon; if (UI.calM < 0) { UI.calM = 11; UI.calY--; } if (UI.calM > 11) { UI.calM = 0; UI.calY++; }
@@ -1565,62 +1781,90 @@ $("main").addEventListener("click", e => {
       catch (err) { toast(friendly(err)); }
     },
     "v-edit": openEditMedia, "v-del": deleteMedia,
-    novalista: () => newList(), voltarlista: () => { UI.openList = null; render(); }, fixar: togglePin, apagarlista: deleteList, copiarlista: copyList,
+    novalista: openNewList, novasecao: newSection, darnota: toggleRated, organizar, voltarlista: () => { UI.openList = null; render(); }, fixar: togglePin, apagarlista: deleteList, copiarlista: copyList,
     hoje: () => { const n = todayDate(); UI.calY = n.getFullYear(); UI.calM = n.getMonth(); UI.selDay = ymd(n); render(true); },
     evento: () => openEventForm(), calendarios: openCalendarios
   }[d.act];
   if (A) A();
 });
-view.addEventListener("submit", async e => {
-  if (e.target.id !== "nadd") return;
-  e.preventDefault();
-  const i = $("nitem"), v = i.value.trim(); if (!v) return;
-  i.disabled = true;
-  try { await addItem(v); } catch (err) { toast(friendly(err)); const n = $("nitem"); if (n) { n.disabled = false; n.value = v; } }
-});
+/* colar no campo de novo item ou na edição de um item. Lê todos os tipos do clipboard; se não vier nada,
+   deixa a colagem padrão acontecer e trata no evento "input" (as quebras de linha ficam no textarea) */
 view.addEventListener("paste", e => {
-  const el = e.target, novo = el.id === "nitem", edit = el.classList && el.classList.contains("tx-in");
+  const el = e.target, novo = el.classList && el.classList.contains("nitem"), edit = el.classList && el.classList.contains("tx-in");
   if (!novo && !edit) return;
-  e.preventDefault();                         /* nunca deixa o navegador colar HTML */
-  const txt = clipText(e), lines = parseLines(txt);
+  const lines = clipLines(e.clipboardData || window.clipboardData);
   if (!lines.length) return;
-  if (novo && lines.length > 1) {
-    const cut = lines.length > 100;
-    el.disabled = true;
-    addMany(lines.slice(0, 100)).then(() => { if (cut) toast("Entraram os 100 primeiros. Cole o resto de novo."); }, err => { toast(friendly(err)); const n = $("nitem"); if (n) n.disabled = false; });
-    return;
-  }
-  /* uma linha só (ou edição de item): entra no cursor, em texto puro */
-  const piece = lines.join(" "), room = Math.max(0, 200 - (el.value.length - (el.selectionEnd - el.selectionStart)));
+  e.preventDefault();                         /* nunca deixa o navegador colar HTML */
+  if (novo && lines.length > 1) { colarLinhas(lines, el.dataset.sec); return; }
+  const piece = lines.join(" "), room = Math.max(0, 5000 - (el.value.length - (el.selectionEnd - el.selectionStart)));
   el.setRangeText(piece.slice(0, room), el.selectionStart, el.selectionEnd, "end");
-  if (edit) fitTA(el);
+  fitTA(el);
 });
-/* copiar da tela da lista (menu do sistema): só título e itens, em texto puro, sem botões nem rótulos */
+/* copiar da tela da lista (menu do sistema): só título, seções e itens, em texto puro, sem botões nem rótulos */
 document.addEventListener("copy", e => {
   if (UI.tab !== "listas") return;
   const L = S.lists.find(l => l.id === UI.openList); if (!L) return;
   if (e.target.matches && e.target.matches("textarea,input")) return;
   const sel = window.getSelection(); if (!sel || sel.isCollapsed) return;
-  const rows = [...view.querySelectorAll(".citem[data-item]")].filter(r => sel.containsNode(r, true));
-  const tit = $("ltitle") && sel.containsNode($("ltitle"), true);
-  if (!rows.length && !tit) return;
-  const lines = rows.map(r => { const it = S.items.find(i => i.id === r.dataset.item); return it ? it.text : ""; }).filter(Boolean);
-  e.clipboardData.setData("text/plain", (tit ? [L.title, ...lines] : lines).join("\n"));
+  const lines = [];
+  if ($("ltitle") && sel.containsNode($("ltitle"), true)) lines.push(L.title);
+  view.querySelectorAll(".lnote .citem[data-item], .lnote .shead").forEach(r => {
+    if (!sel.containsNode(r, true)) return;
+    if (r.classList.contains("shead")) { const x = S.sections.find(s => s.id === r.dataset.shead); if (x) lines.push("", x.title); }
+    else { const it = S.items.find(i => i.id === r.dataset.item); if (it) lines.push(it.text); }
+  });
+  if (!lines.length) return;
+  e.clipboardData.setData("text/plain", lines.join("\n").replace(/^\n/, ""));
   e.preventDefault();
 });
 /* colar com setRangeText não dispara "change": salva também ao sair do campo (não repete se nada mudou) */
-view.addEventListener("focusout", e => { if (e.target.classList && e.target.classList.contains("tx-in") && e.target.isConnected) saveItemText(e.target.dataset.edit, e.target); });
-view.addEventListener("pointerdown", e => { const g = e.target.closest("[data-grip]"); if (g) startDrag(e, g); });
-view.addEventListener("input", e => { if (e.target.classList && e.target.classList.contains("tx-in")) fitTA(e.target); });
+view.addEventListener("focusout", e => {
+  const t = e.target; if (!t.classList || !t.isConnected) return;
+  if (t.classList.contains("tx-in")) saveItemText(t.dataset.edit, t);
+  else if (t.classList.contains("sec-in")) renameSection(t.dataset.secEdit, t);
+});
+view.addEventListener("pointerdown", e => {
+  const g = e.target.closest("[data-grip]"); if (g) return startDrag(e, g, "item");
+  const s = e.target.closest("[data-sgrip]"); if (s) startDrag(e, s, "sec");
+});
+/* qualquer caminho de colagem que deixe várias linhas no campo vira vários itens */
+view.addEventListener("input", e => {
+  const el = e.target; if (!el.classList) return;
+  if (el.classList.contains("tx-in")) {
+    if (temQuebra(el.value)) el.value = parseLines(el.value).join(" ");
+    fitTA(el); return;
+  }
+  if (el.classList.contains("nitem")) {
+    if (temQuebra(el.value)) { const lines = parseLines(el.value); el.value = ""; fitTA(el); if (lines.length) colarLinhas(lines, el.dataset.sec); return; }
+    if (/^insertFromPaste|^insertFromDrop|^insertReplacementText/.test(e.inputType || "")) el.value = limpaLinha(el.value);
+    fitTA(el);
+  }
+});
+/* "Retorno" do celular (que nem sempre manda a tecla Enter) também adiciona o item */
+view.addEventListener("beforeinput", e => {
+  const el = e.target;
+  if (el.classList && el.classList.contains("nitem") && (e.inputType === "insertLineBreak" || e.inputType === "insertParagraph")) { e.preventDefault(); submitNovo(el); }
+});
 view.addEventListener("keydown", e => {
-  const g = e.target.closest && e.target.closest("[data-grip]");
+  const el = e.target;
+  const g = el.closest && el.closest("[data-grip],[data-sgrip]");
   if (g && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
     e.preventDefault();
-    const it = S.items.find(i => i.id === g.dataset.grip); if (!it) return;
-    const idx = itemsOf(it.list_id).findIndex(i => i.id === it.id);
-    moveItem(it.id, idx + (e.key === "ArrowUp" ? -1 : 1)).then(() => { const n = view.querySelector(`[data-grip="${it.id}"]`); if (n) n.focus(); });
+    const d = e.key === "ArrowUp" ? -1 : 1;
+    if (g.dataset.grip) {
+      const id = g.dataset.grip;
+      moveItem(id, d).then(() => { const n = view.querySelector(`[data-grip="${id}"]`); if (n) n.focus(); });
+    } else {
+      const id = g.dataset.sgrip, x = S.sections.find(s => s.id === id); if (!x) return;
+      moveSection(id, secsOf(x.list_id).findIndex(s => s.id === id) + d).then(() => { const n = view.querySelector(`[data-sgrip="${id}"]`); if (n) n.focus(); });
+    }
+    return;
   }
-  if (e.key === "Enter" && !e.shiftKey && e.target.classList && e.target.classList.contains("tx-in")) { e.preventDefault(); e.target.blur(); }
+  if (e.key === "Enter" && !e.isComposing && el.classList) {
+    if (el.classList.contains("nitem")) { e.preventDefault(); submitNovo(el); }
+    else if (el.classList.contains("tx-in") && !e.shiftKey) { e.preventDefault(); el.blur(); }
+    else if (el.classList.contains("sec-in") || el.id === "ltitle") el.blur();
+  }
 });
 view.addEventListener("change", async e => {
   if (e.target.classList && e.target.classList.contains("tx-in")) { saveItemText(e.target.dataset.edit, e.target); return; }
@@ -1632,7 +1876,6 @@ view.addEventListener("change", async e => {
   try { const r = await q(sb.from("lists").update({ title: v, updated_at: new Date().toISOString() }).eq("id", L.id).select().single()); Object.assign(L, r); }
   catch (err) { e.target.value = L.title; toast(friendly(err)); }
 });
-view.addEventListener("keydown", e => { if (e.key === "Enter" && e.target.id === "ltitle") e.target.blur(); });
 
 /* ============ atualizar quando voltar para o app ============ */
 async function refresh() {

@@ -1,5 +1,5 @@
 /* Guarda só os arquivos do próprio app. Nunca guarda respostas do Supabase, fontes ou fotos. */
-const VERSAO = "us-v6";
+const VERSAO = "us-v7";
 const ARQUIVOS = ["./", "index.html", "styles.css", "app.js", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png"];
 
 self.addEventListener("install", e => {
