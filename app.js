@@ -69,12 +69,12 @@ function ic(name, size = 22, sw = 2) {
 const PLAY = '<svg width="18" height="18" viewBox="0 0 24 24" fill="#fff" aria-hidden="true"><path d="M7 4.5v15l12.5-7.5Z"/></svg>';
 
 /* ============ estado ============ */
-const S = { user: null, members: [], couple: null, media: [], trips: [], lists: [], items: [], events: [], calendars: [], loaded: false, lastLoad: 0 };
+const S = { user: null, members: [], couple: null, media: [], trips: [], lists: [], items: [], events: [], calendars: [], dates: [], loaded: false, lastLoad: 0 };
 const t0 = todayDate();
 const UI = {
   tab: "feed", seg: "datas", openList: null, panel: null, viewer: null,
   calY: t0.getFullYear(), calM: t0.getMonth(), selDay: ymd(t0),
-  authTab: "entrar", authEmail: "", recovery: false, dateStep: false, onbMode: "criar"
+  authTab: "entrar", authEmail: "", recovery: false, onbMode: "criar"
 };
 const view = $("view"), panel = $("panel"), viewer = $("viewer"), gate = $("gate"), app = $("app");
 
@@ -150,15 +150,17 @@ async function loadData() {
   S.members = sortMembers(mem);
   if (!me()) { S.couple = null; return false; }
   const coupleId = me().couple_id;
-  const [couple, media, trips, lists, items, events, cals] = await Promise.all([
+  const [couple, media, trips, lists, items, events, cals, dts] = await Promise.all([
     q(sb.from("couples").select("*").eq("id", coupleId).single()),
     fetchAll("media", b => b.order("taken_at", { ascending: false }).order("created_at", { ascending: false }).order("id")),
     q(sb.from("trips").select("*").order("created_at", { ascending: false })),
     q(sb.from("lists").select("*").order("updated_at", { ascending: false })),
     fetchAll("list_items", b => b.order("position", { ascending: true }).order("created_at", { ascending: true }).order("id")),
     q(sb.from("events").select("*").order("starts_on", { ascending: true })),
-    sb.from("calendars").select("*").order("created_at", { ascending: true }).then(r => r.error ? [] : r.data, () => [])
+    sb.from("calendars").select("*").order("created_at", { ascending: true }).then(r => r.error ? [] : r.data, () => []),
+    sb.from("couple_dates").select("*").order("created_at", { ascending: true }).then(r => r.error ? [] : r.data, () => [])
   ]);
+  S.dates = dts;
   S.couple = couple; S.media = media; S.trips = trips; S.lists = lists; S.items = items; S.events = events; S.calendars = cals;
   S.loaded = true; S.lastLoad = Date.now();
   return true;
@@ -237,61 +239,129 @@ function showOnboarding() {
     </form>
     <div class="row-links"><button class="link" data-g="signout">Sair da conta</button></div></div>`);
 }
-function showDateStep() {
-  showGate(`<div class="center"><h1 class="step">Quando começou a história de vocês?</h1><p class="lede">Com a data de início o Us conta quanto tempo vocês já têm juntos.</p>
-    <p id="authmsg" class="msg" hidden></p>
-    <form data-form="data" novalidate>
-      <label class="field"><span>Início do namoro</span><input name="data" type="date" max="${ymd(todayDate())}" required></label>
-      <button class="btn" type="submit">Salvar e entrar</button>
-    </form>
-    <div class="row-links"><button class="link" data-g="skipdate">Pular por agora</button></div></div>`);
-}
-
-/* ---- datas importantes: uma pergunta por vez ---- */
+/* ---- sequência de perguntas: fase, datas preferidas, outras datas e aniversário (uma por tela, sempre com Pular) ---- */
 const partnerName = () => { const p = partner(); return p && p.display_name ? p.display_name : "quem você ama"; };
+const STAGES = [["namoro", "Namorados"], ["noivado", "Noivos"], ["casamento", "Casados"]];
+const DKEYS = ["met", "kiss", "dating", "engaged", "married", "child"];
+const DLABEL = { met: "Dia em que se conheceram", kiss: "Primeiro beijo", dating: "Pedido de namoro", engaged: "Pedido de noivado", married: "Casamento", child: "Nascimento do primeiro filho" };
 const DSTEP = {
-  birthday: () => ({ h: "Quando é o seu aniversário?", lede: `Só ${partnerName()} vê esse lembrete, um dia antes.`, label: "Seu aniversário" }),
-  met: () => ({ h: "Que dia vocês se conheceram?", lede: "Vira um lembrete todo ano, para os dois.", label: "Dia em que se conheceram" }),
-  kiss: () => ({ h: "E o primeiro beijo, quando foi?", lede: "Também vira um lembrete todo ano, para os dois.", label: "Dia do primeiro beijo" })
+  stage: () => ({ h: "Vocês namoram, são noivos ou são casados?", lede: "Escolha o que descreve vocês hoje. Dá para mudar depois." }),
+  pick: () => ({ h: "Quais são as datas preferidas do casal?", lede: "Marque as que quiser, ou nenhuma. Cada uma vira um lembrete todo ano, para os dois." }),
+  met: () => ({ h: "Quando vocês se conheceram?", lede: "Vira um lembrete todo ano, para os dois.", label: DLABEL.met }),
+  kiss: () => ({ h: "Quando foi o primeiro beijo?", lede: "Vira um lembrete todo ano, para os dois.", label: DLABEL.kiss }),
+  dating: () => ({ h: "Quando foi o pedido de namoro?", lede: "O Us conta o tempo de vocês e lembra o aniversário de namoro todo ano.", label: DLABEL.dating }),
+  engaged: () => ({ h: "Quando foi o pedido de noivado?", lede: "Vira um lembrete todo ano, para os dois.", label: DLABEL.engaged }),
+  married: () => ({ h: "Quando foi o casamento?", lede: "Vira um lembrete todo ano, para os dois.", label: DLABEL.married }),
+  child: () => ({ h: "Quando nasceu o primeiro filho?", lede: "O aniversário dele ou dela vira lembrete todo ano, para os dois." }),
+  others: () => ({ h: "Outras datas importantes", lede: "Aniversário de um filho ou de um amigo, uma data só de vocês. Se não tiver nenhuma, é só continuar." }),
+  birthday: () => ({ h: "Quando é o seu aniversário?", lede: `Só ${partnerName()} vê esse lembrete, um dia antes.`, label: "Seu aniversário" })
 };
-function startDates() {
-  const c = S.couple, steps = ["birthday"];
-  if (!c.met_on) steps.push("met");
-  if (!c.first_kiss_on) steps.push("kiss");
-  UI.dflow = { steps, i: 0, vals: {} };
+/* quais datas ainda podem ser escolhidas (o que já está preenchido não volta) */
+function flowOptions(f) {
+  const st = f.stage, keys = ["met", "kiss", "dating"];
+  if (st === "noivado" || st === "casamento") keys.push("engaged");
+  if (st === "casamento") keys.push("married");
+  return keys.filter(k => f.snap[k]);
+}
+function flowPlan(f) {
+  const out = [];
+  if (f.snap.askStage) out.push("stage");
+  if (flowOptions(f).length) out.push("pick");
+  if (f.picked) DKEYS.filter(k => f.picked.includes(k)).forEach(k => out.push(k));
+  out.push("others");
+  if (f.snap.birthday) out.push("birthday");
+  return out;
+}
+function startFlow() {
+  const c = S.couple, mm = me();
+  UI.dflow = { i: 0, stage: c.stage || null, picked: null, checked: null, rows: [{ title: "", date: "" }],
+    snap: { askStage: !c.stage, met: !c.met_on, kiss: !c.first_kiss_on, dating: !c.start_date, engaged: !c.engaged_on, married: !c.married_on, child: !S.dates.some(d => d.kind === "child"), birthday: !mm.birthday } };
+  flowShow().catch(e => errorGate(e));
+}
+async function flowShow() {
+  const f = UI.dflow;
+  if (f.i >= flowPlan(f).length) { await saveCouple({}, { mark: true }); UI.dflow = null; enterApp(); return; }
   showDatesStep();
 }
 function showDatesStep() {
-  const f = UI.dflow, k = f.steps[f.i], d = DSTEP[k](), n = f.steps.length, last = f.i === n - 1;
-  showGate(`<div class="center"><p class="stepno" role="status">${f.i + 1} de ${n}</p>
-    <div class="dbar" aria-hidden="true">${f.steps.map((_, j) => `<i class="${j <= f.i ? "on" : ""}"></i>`).join("")}</div>
+  const f = UI.dflow, plan = flowPlan(f), k = plan[f.i], d = DSTEP[k](), n = plan.length, last = f.i === n - 1, hoje = ymd(todayDate());
+  const semContagem = k === "stage" || k === "pick";
+  const head = semContagem ? `<div style="height:20px"></div>` : `<p class="stepno" role="status">${f.i + 1} de ${n}</p><div class="dbar" aria-hidden="true">${plan.map((_, j) => `<i class="${j <= f.i ? "on" : ""}"></i>`).join("")}</div>`;
+  const go = last ? "Concluir" : "Continuar";
+  let body;
+  if (k === "stage") body = `<div class="pick-list" role="group" aria-label="Fase do casal">${STAGES.map(([v, t]) => `<button type="button" class="pick-opt" data-g="stage" data-v="${v}">${t}</button>`).join("")}</div>`;
+  else if (k === "pick") {
+    if (!f.checked) f.checked = f.stage === "casamento" && f.snap.married ? ["married"] : [];
+    body = `<div class="pick-list" role="group" aria-label="Datas preferidas">${flowOptions(f).map(o => `<button type="button" class="pick-opt multi" data-g="ptoggle" data-v="${o}" aria-pressed="${f.checked.includes(o)}"><span class="cb" aria-hidden="true">${ic("check", 14, 3.4)}</span>${esc(DLABEL[o])}</button>`).join("")}</div>
+      <button class="btn" type="button" data-g="pcont" style="margin-top:14px">${go}</button>`;
+  } else if (k === "child") body = `<form data-form="child" novalidate>
+      <label class="field"><span>Nome</span><input name="nome" maxlength="60" autocomplete="off"></label>
+      <label class="field"><span>Aniversário</span><input name="data" type="date" min="1900-01-01" max="${hoje}"></label>
+      <button class="btn" type="submit">${go}</button></form>`;
+  else if (k === "others") body = `<form data-form="others" novalidate>
+      ${f.rows.map((r, j) => `<div class="kid">
+        <label class="field"><span>Nome da data</span><input data-row="${j}" data-f="title" maxlength="80" autocomplete="off" placeholder="Ex.: Aniversário da Letícia" value="${esc(r.title)}"></label>
+        <label class="field"><span>Dia</span><input type="date" data-row="${j}" data-f="date" min="1900-01-01" value="${esc(r.date)}"></label>
+        ${f.rows.length > 1 ? `<button type="button" class="link" data-g="rrem" data-i="${j}">Remover</button>` : ""}</div>`).join("")}
+      ${f.rows.length < 20 ? `<button type="button" class="btn ghost" data-g="radd">Adicionar outra</button>` : ""}
+      <button class="btn" type="submit">${go}</button></form>`;
+  else body = `<form data-form="datas" novalidate>
+      <label class="field"><span>${esc(d.label)}</span><input name="data" type="date" min="1900-01-01" max="${hoje}"></label>
+      <button class="btn" type="submit">${go}</button></form>`;
+  showGate(`<div class="center">${head}
     <h1 class="step" style="margin-top:18px">${esc(d.h)}</h1><p class="lede">${esc(d.lede)}</p>
     <p id="authmsg" class="msg" hidden></p>
-    <form data-form="datas" novalidate>
-      <label class="field"><span>${esc(d.label)}</span><input name="data" type="date" min="1900-01-01" max="${ymd(todayDate())}" value="${esc(f.vals[k] || "")}"></label>
-      <button class="btn" type="submit">${last ? "Concluir" : "Continuar"}</button>
-    </form>
-    <div class="row-links"><button class="link" data-g="skipdates">Pular</button></div></div>`);
+    ${body}
+    <button class="btn soft" type="button" data-g="skipdates">Pular</button></div>`);
 }
-async function datesAdvance(val) {
+const DCOL = { met: "met", kiss: "kiss", dating: "start", engaged: "engaged", married: "married" };
+/* val vazio = Pular (nada é gravado nem apagado) */
+async function flowAdvance(val) {
   const f = UI.dflow; if (!f) return;
-  const k = f.steps[f.i];
-  if (val) f.vals[k] = val; else delete f.vals[k];
-  if (f.i < f.steps.length - 1) { f.i++; showDatesStep(); return; }
-  await saveDates(f.vals, true);
-  UI.dflow = null; enterApp();
+  const k = flowPlan(f)[f.i];
+  if (k === "pick") f.picked = val === "ok" ? [...(f.checked || [])] : [];
+  else if (val) {
+    if (k === "stage") { await saveCouple({ stage: val }); f.stage = val; f.checked = null; }
+    else if (DCOL[k]) await saveCouple({ [DCOL[k]]: val });
+    else if (k === "birthday") await saveDates({ birthday: val }, true);
+  }
+  f.i++; await flowShow();
 }
-/* grava as datas pelo banco (que também cria os compromissos). v só traz o que a pessoa mexeu; o resto fica como está */
-async function saveDates(v, mark) {
-  const c = S.couple, fields = ["birthday", "met", "kiss"].filter(k => k in v);
-  /* só vão os campos que a pessoa mexeu de propósito; o resto o banco deixa como está */
-  await q(sb.rpc("save_my_dates", { p_birthday: v.birthday || null, p_met_on: v.met || null, p_first_kiss_on: v.kiss || null, p_mark_onboarded: !!mark, p_fields: fields }));
-  const [mem, cp, evs] = await Promise.all([
+async function flowChild(form) {
+  const nome = form.nome.value.trim(), data = form.data.value, hoje = ymd(todayDate());
+  if (!nome) return authMsg("err", "Escreva o nome ou toque em Pular.");
+  if (!data) return authMsg("err", "Escolha a data de nascimento ou toque em Pular.");
+  if (data > hoje || data < "1900-01-01") return authMsg("err", "Essa data não vale. Confira o dia, o mês e o ano.");
+  await q(sb.from("couple_dates").insert({ couple_id: S.couple.id, title: nome, date: data, kind: "child" }));
+  await refreshCore(); UI.dflow.i++; await flowShow();
+}
+async function flowOthers() {
+  const f = UI.dflow, rows = f.rows.map(r => ({ title: r.title.trim(), date: r.date })).filter(r => r.title || r.date);
+  if (rows.some(r => !r.title || !r.date)) return authMsg("err", "Preencha o nome e o dia de cada data, ou toque em Remover.");
+  if (rows.some(r => r.date < "1900-01-01" || r.date > "2100-01-01")) return authMsg("err", "Alguma data não vale. Confira o dia, o mês e o ano.");
+  if (rows.length) { await q(sb.from("couple_dates").insert(rows.map(r => ({ couple_id: S.couple.id, title: r.title, date: r.date, kind: "other" })))); await refreshCore(); }
+  f.i++; await flowShow();
+}
+async function refreshCore() {
+  const [mem, cp, evs, dts] = await Promise.all([
     q(sb.from("couple_members").select("*")),
-    q(sb.from("couples").select("*").eq("id", c.id).single()),
-    q(sb.from("events").select("*").order("starts_on", { ascending: true }))
+    q(sb.from("couples").select("*").eq("id", S.couple.id).single()),
+    q(sb.from("events").select("*").order("starts_on", { ascending: true })),
+    sb.from("couple_dates").select("*").order("created_at", { ascending: true }).then(r => r.error ? S.dates : r.data, () => S.dates)
   ]);
-  S.members = sortMembers(mem); S.couple = cp; S.events = evs;
+  S.members = sortMembers(mem); S.couple = cp; S.events = evs; S.dates = dts;
+}
+/* fase e datas do casal pelo banco (que também cria os compromissos). v só traz o que mudou de propósito; o resto fica como está */
+async function saveCouple(v, o = {}) {
+  const fields = ["stage", "start", "engaged", "married", "met", "kiss"].filter(k => k in v);
+  await q(sb.rpc("save_couple_info", { p_stage: v.stage || null, p_start_on: v.start || null, p_engaged_on: v.engaged || null, p_married_on: v.married || null, p_met_on: v.met || null, p_first_kiss_on: v.kiss || null, p_mark_onboarded: !!o.mark, p_fields: fields }));
+  await refreshCore();
+}
+/* meu aniversário (escondido de mim) */
+async function saveDates(v, mark) {
+  const fields = ["birthday", "met", "kiss"].filter(k => k in v);
+  await q(sb.rpc("save_my_dates", { p_birthday: v.birthday || null, p_met_on: v.met || null, p_first_kiss_on: v.kiss || null, p_mark_onboarded: !!mark, p_fields: fields }));
+  await refreshCore();
 }
 
 const FORMS = {
@@ -332,7 +402,6 @@ const FORMS = {
     if (!nome) return authMsg("err", "Escreva como você quer ser chamado(a).");
     if (UI.onbMode === "criar") {
       await q(sb.rpc("create_couple", { p_display_name: nome }));
-      UI.dateStep = true;
     } else {
       const codigo = f.codigo.value.trim(); UI.onbCode = codigo;
       if (!codigo) return authMsg("err", "Digite o código de convite.");
@@ -340,18 +409,14 @@ const FORMS = {
     }
     await boot();
   },
-  async data(f) {
-    const d = f.data.value;
-    if (!d) return authMsg("err", "Escolha a data ou toque em Pular por agora.");
-    await q(sb.from("couples").update({ start_date: d }).eq("id", S.couple.id));
-    S.couple.start_date = d; UI.dateStep = false; proceed();
-  },
   async datas(f) {
     const v = f.data.value;
     if (!v) return authMsg("err", "Escolha a data ou toque em Pular.");
     if (v > ymd(todayDate()) || v < "1900-01-01") return authMsg("err", "Essa data não vale. Confira o dia, o mês e o ano.");
-    await datesAdvance(v);
-  }
+    await flowAdvance(v);
+  },
+  async child(f) { await flowChild(f); },
+  async others() { await flowOthers(); }
 };
 function onbErr(e) {
   const m = String((e && e.message) || "");
@@ -367,10 +432,11 @@ gate.addEventListener("submit", async e => {
   try { await FORMS[f.dataset.form](f); }
   catch (err) {
     if (/already in a couple/i.test(String(err && err.message))) { boot(); return; }
-    authMsg("err", onbErr(err) || (f.dataset.form === "onb" || f.dataset.form === "data" || f.dataset.form === "datas" ? friendly(err) : authErr(err)));
+    authMsg("err", onbErr(err) || (["onb", "datas", "child", "others"].includes(f.dataset.form) ? friendly(err) : authErr(err)));
   }
   if (btn.isConnected) { btn.disabled = false; btn.textContent = label; }
 });
+gate.addEventListener("input", e => { const t = e.target; if (UI.dflow && t.dataset && t.dataset.row != null && UI.dflow.rows[+t.dataset.row]) UI.dflow.rows[+t.dataset.row][t.dataset.f] = t.value; });
 gate.addEventListener("click", async e => {
   const t = e.target.closest("[data-g]"); if (!t) return;
   const a = t.dataset.g;
@@ -378,8 +444,16 @@ gate.addEventListener("click", async e => {
   else if (a === "mode") { const f = gate.querySelector("input[name=nome]"); if (f) UI.onbName = f.value; UI.onbMode = t.dataset.v; showOnboarding(); }
   else if (a === "retry") boot();
   else if (a === "signout") signOut();
-  else if (a === "skipdate") { UI.dateStep = false; proceed(); }
-  else if (a === "skipdates") { if (t.disabled) return; t.disabled = true; try { await datesAdvance(null); } catch (err) { authMsg("err", friendly(err)); } if (t.isConnected) t.disabled = false; }
+  else if (a === "skipdates") { if (t.disabled) return; t.disabled = true; try { await flowAdvance(null); } catch (err) { authMsg("err", friendly(err)); } if (t.isConnected) t.disabled = false; }
+  else if (UI.dflow && ["stage", "ptoggle", "pcont", "radd", "rrem"].includes(a)) {
+    const f = UI.dflow;
+    if (a === "ptoggle") { const v = t.dataset.v, i = f.checked.indexOf(v); if (i >= 0) f.checked.splice(i, 1); else f.checked.push(v); showDatesStep(); return; }
+    if (a === "radd") { f.rows.push({ title: "", date: "" }); showDatesStep(); const n = gate.querySelectorAll("[data-f=title]"); if (n.length) n[n.length - 1].focus(); return; }
+    if (a === "rrem") { f.rows.splice(+t.dataset.i, 1); showDatesStep(); return; }
+    if (t.disabled) return; t.disabled = true;
+    try { await flowAdvance(a === "stage" ? t.dataset.v : "ok"); } catch (err) { authMsg("err", friendly(err)); }
+    if (t.isConnected) t.disabled = false;
+  }
 });
 async function signOut() {
   try { await dropPushOnSignOut(); } catch (e) { /* segue mesmo assim */ }
@@ -387,8 +461,8 @@ async function signOut() {
   resetState(); UI.authTab = "entrar"; showAuth();
 }
 function resetState() {
-  Object.assign(S, { user: null, members: [], couple: null, media: [], trips: [], lists: [], items: [], events: [], calendars: [], loaded: false });
-  Object.assign(UI, { tab: "feed", openList: null, panel: null, viewer: null, dateStep: false, dflow: null });
+  Object.assign(S, { user: null, members: [], couple: null, media: [], trips: [], lists: [], items: [], events: [], calendars: [], dates: [], loaded: false });
+  Object.assign(UI, { tab: "feed", openList: null, panel: null, viewer: null, dflow: null });
   urlCache.clear(); closePanel(true); closeViewer(true); closeSheet();
 }
 
@@ -404,12 +478,11 @@ async function bootRun() {
     S.user = data.session.user;
     const has = await loadData();
     if (!has) { showOnboarding(); return; }
-    if (UI.dateStep) { showDateStep(); return; }
     proceed();
   } catch (e) { errorGate(e); }
 }
-/* depois do cadastro: quem ainda não passou pelas datas importantes responde agora (uma vez só) */
-function proceed() { const m = me(); if (m && !m.dates_onboarded_at) startDates(); else enterApp(); }
+/* depois do cadastro: quem ainda não passou pelas perguntas do casal responde agora (uma vez só; o que já estiver preenchido não volta) */
+function proceed() { const m = me(); if (m && !m.stage_onboarded_at) startFlow(); else enterApp(); }
 function enterApp() {
   gate.hidden = true; app.hidden = false;
   document.querySelectorAll(".tab").forEach(t => t.dataset.tab === UI.tab ? t.setAttribute("aria-current", "page") : t.removeAttribute("aria-current"));
@@ -606,7 +679,7 @@ function noteHTML() {
   const its = itemsOf(L.id);
   return `<div class="lnote">
     <div class="nbar"><button data-act="voltarlista" class="back" style="color:var(--red);font-size:16px;font-weight:400">${ic("back", 20, 2.4)}Listas</button>
-      <span class="icos"><button data-act="fixar" aria-pressed="${L.pinned}" aria-label="${L.pinned ? "Desafixar lista" : "Fixar lista"}">${ic(L.pinned ? "pinfill" : "pin", 21, 1.9)}</button><button data-act="apagarlista" aria-label="Apagar lista">${ic("trash", 21, 1.9)}</button></span></div>
+      <span class="icos"><button data-act="copiarlista" aria-label="Copiar lista">${ic("copy", 21, 1.9)}</button><button data-act="fixar" aria-pressed="${L.pinned}" aria-label="${L.pinned ? "Desafixar lista" : "Fixar lista"}">${ic(L.pinned ? "pinfill" : "pin", 21, 1.9)}</button><button data-act="apagarlista" aria-label="Apagar lista">${ic("trash", 21, 1.9)}</button></span></div>
     <div class="lnote-date">Atualizada ${esc(relDay(L.updated_at))}</div>
     <label class="sr" for="ltitle" style="position:absolute;left:-9999px">Título da lista</label>
     <input class="title-in" id="ltitle" value="${esc(L.title)}" maxlength="120" autocomplete="off" enterkeyhint="done">
@@ -724,8 +797,13 @@ sheetEl.addEventListener("click", async e => {
   e.preventDefault();
   await guard(t, () => h(t, e));
 });
-sheetEl.addEventListener("input", e => { const t = e.target; if (t.dataset && t.dataset.m && SH) SH.model[t.dataset.m] = t.value; });
-sheetEl.addEventListener("change", e => { const t = e.target; if (t.dataset && t.dataset.m && SH) SH.model[t.dataset.m] = t.value; });
+const sheetField = e => {
+  const t = e.target; if (!SH || !t.dataset) return;
+  if (t.dataset.m) SH.model[t.dataset.m] = t.value;
+  else if (t.dataset.row != null && SH.model.rows && SH.model.rows[+t.dataset.row]) SH.model.rows[+t.dataset.row][t.dataset.f] = t.value;
+};
+sheetEl.addEventListener("input", sheetField);
+sheetEl.addEventListener("change", sheetField);
 sheetEl.addEventListener("submit", async e => {
   const f = e.target.closest("form"); if (!f || !SH) return;
   e.preventDefault();
@@ -851,7 +929,19 @@ function openPicker(o) {
 /* ============ ações: perfil ============ */
 function openProfile() {
   const c = S.couple, mm = me();
-  const m = { push: "checking", about: c.about_mode, song_title: c.song_title || "", song_artist: c.song_artist || "", phrase: c.phrase || "", nome: mm.display_name || "", start: c.start_date || "", birthday: mm.birthday || "", met: c.met_on || "", kiss: c.first_kiss_on || "", orig: { birthday: mm.birthday || "", met: c.met_on || "", kiss: c.first_kiss_on || "" }, err: "" };
+  const m = { push: "checking", about: c.about_mode, song_title: c.song_title || "", song_artist: c.song_artist || "", phrase: c.phrase || "", nome: mm.display_name || "", start: c.start_date || "", birthday: mm.birthday || "", met: c.met_on || "", kiss: c.first_kiss_on || "",
+    stage: c.stage || "", engaged: c.engaged_on || "", married: c.married_on || "",
+    rows: S.dates.map(d => ({ id: d.id, title: d.title, date: d.date, kind: d.kind })),
+    orig: { birthday: mm.birthday || "", met: c.met_on || "", kiss: c.first_kiss_on || "", start: c.start_date || "", stage: c.stage || "", engaged: c.engaged_on || "", married: c.married_on || "" }, err: "" };
+  m.origRows = JSON.parse(JSON.stringify(m.rows));
+  const hojeP = ymd(todayDate());
+  const dfield = (key, label, help) => `<label class="field"><span>${label}</span><input type="date" data-m="${key}" min="1900-01-01" max="${hojeP}" value="${esc(m[key])}">${help ? `<span class="help">${esc(help)}</span>` : ""}</label>`;
+  const couplePart = () => {
+    const st = m.stage;
+    const dates = (st === "casamento" ? dfield("married", DLABEL.married) : "") + dfield("start", DLABEL.dating) + (st === "noivado" || st === "casamento" ? dfield("engaged", DLABEL.engaged) : "") + dfield("met", DLABEL.met) + dfield("kiss", DLABEL.kiss);
+    const rows = `<div class="field"><span>Outras datas importantes</span>${m.rows.map((r, j) => `<div class="kid"><input data-row="${j}" data-f="title" maxlength="80" placeholder="${r.kind === "child" ? "Nome do filho" : "Ex.: Aniversário da Letícia"}" aria-label="Nome da data" autocomplete="off" value="${esc(r.title)}"><input type="date" data-row="${j}" data-f="date" min="1900-01-01" aria-label="Dia" value="${esc(r.date)}"><button type="button" class="link" data-s="rrem" data-i="${j}">Remover</button></div>`).join("")}${m.rows.length < 40 ? `<button type="button" class="btn ghost" data-s="radd" data-k="other">Adicionar data</button>` : ""}</div>`;
+    return `<div class="field"><span>Vocês são</span><div class="chips" role="group" aria-label="Fase do casal">${STAGES.map(([v, t]) => `<button type="button" data-s="stage" data-v="${v}" aria-pressed="${st === v}">${t}</button>`).join("")}</div></div>${dates}${rows}`;
+  };
   const def = {
     model: m, focus: false,
     view: () => `<h3>Editar perfil</h3><p class="hint">O que aparece embaixo dos nomes de vocês.</p>
@@ -863,10 +953,8 @@ function openProfile() {
       ${m.about === "musica" ? `<label class="field"><span>Título da música</span><input data-m="song_title" maxlength="120" value="${esc(m.song_title)}" autocomplete="off"></label><label class="field"><span>Artista</span><input data-m="song_artist" maxlength="120" value="${esc(m.song_artist)}" autocomplete="off"></label>` : ""}
       ${m.about === "frase" ? `<label class="field"><span>A frase de vocês</span><textarea data-m="phrase" maxlength="200" rows="2">${esc(m.phrase)}</textarea></label>` : ""}
       <label class="field"><span>Seu nome</span><input data-m="nome" maxlength="60" value="${esc(m.nome)}" autocomplete="given-name"></label>
-      <label class="field"><span>Início do namoro</span><input type="date" data-m="start" max="${ymd(todayDate())}" value="${esc(m.start)}"></label>
       <label class="field"><span>Seu aniversário</span><input type="date" data-m="birthday" min="1900-01-01" max="${ymd(todayDate())}" value="${esc(m.birthday)}"><span class="help">Só ${esc(partnerName())} vê esse lembrete, um dia antes.</span></label>
-      <label class="field"><span>Dia em que se conheceram</span><input type="date" data-m="met" min="1900-01-01" max="${ymd(todayDate())}" value="${esc(m.met)}"></label>
-      <label class="field"><span>Dia do primeiro beijo</span><input type="date" data-m="kiss" min="1900-01-01" max="${ymd(todayDate())}" value="${esc(m.kiss)}"></label>
+      ${couplePart()}
       <button class="cover-row" type="button" data-s="avatar"><span class="th" style="width:44px;height:44px;border-radius:50%;display:grid;place-items:center;font-family:var(--f-display);font-style:italic;font-size:22px;color:var(--red)">${mm.avatar_path ? imgTag(mm.avatar_path, "") : esc((mm.display_name || "?").charAt(0).toUpperCase())}</span><span><b style="display:block;font-size:15.5px">Sua foto</b><span style="font-size:13px;color:var(--ink-2)">${mm.avatar_path ? "Trocar a foto do seu perfil" : "Escolher uma foto sua"}</span></span></button>
       <button class="cover-row" type="button" data-s="capa"><span class="th ${c.cover_path ? "" : "none"}">${c.cover_path ? imgTag(c.cover_path, "") : ""}</span><span><b style="display:block;font-size:15.5px">Trocar foto de capa</b><span style="font-size:13px;color:var(--ink-2)">Escolher entre as fotos de vocês ou enviar uma nova</span></span></button>
       <div class="push-box"><b>Notificações dos compromissos</b><p class="d">${esc(PUSH_TXT[m.push] || "")}</p>${m.push === "on" ? '<button type="button" class="btn ghost" data-s="pushoff">Desativar neste aparelho</button>' : m.push === "off" ? '<button type="button" class="btn ghost" data-s="pushon">Ativar neste aparelho</button>' : ""}</div>
@@ -875,12 +963,18 @@ function openProfile() {
       </form>`,
     on: {
       about: t => { m.about = t.dataset.v; drawSheet(); },
+      stage: t => { m.stage = t.dataset.v; drawSheet(); },
+      radd: t => { m.rows.push({ id: null, title: "", date: "", kind: t.dataset.k }); drawSheet(); },
+      rrem: t => { m.rows.splice(+t.dataset.i, 1); drawSheet(); },
       submit: async () => {
         const nome = m.nome.trim();
         if (!nome) { m.err = "Escreva o seu nome."; drawSheet(); return; }
         const hoje = ymd(todayDate());
-        if ([m.birthday, m.met, m.kiss].some(x => x && (x > hoje || x < "1900-01-01"))) { m.err = "Alguma data não vale. Confira o dia, o mês e o ano."; drawSheet(); return; }
-        const patch = { about_mode: m.about, song_title: m.song_title.trim() || null, song_artist: m.song_artist.trim() || null, phrase: m.phrase.trim() || null, start_date: m.start || null };
+        if ([m.birthday, m.met, m.kiss, m.start, m.engaged, m.married].some(x => x && (x > hoje || x < "1900-01-01"))) { m.err = "Alguma data não vale. Confira o dia, o mês e o ano."; drawSheet(); return; }
+        const rows = m.rows.map(r => ({ id: r.id, kind: r.kind, title: r.title.trim(), date: r.date })).filter(r => r.id || r.title || r.date);
+        if (rows.some(r => !r.title || !r.date)) { m.err = "Preencha o nome e o dia de cada data, ou toque em Remover."; drawSheet(); return; }
+        if (rows.some(r => r.date < "1900-01-01" || r.date > "2100-01-01")) { m.err = "Alguma data não vale. Confira o dia, o mês e o ano."; drawSheet(); return; }
+        const patch = { about_mode: m.about, song_title: m.song_title.trim() || null, song_artist: m.song_artist.trim() || null, phrase: m.phrase.trim() || null };
         const [c2, m2] = await Promise.all([
           q(sb.from("couples").update(patch).eq("id", S.couple.id).select().single()),
           q(sb.from("couple_members").update({ display_name: nome }).eq("user_id", S.user.id).select().single())
@@ -889,7 +983,19 @@ function openProfile() {
         /* só manda o que mudou em relação ao que o formulário mostrava ao abrir */
         const v = {};
         ["birthday", "met", "kiss"].forEach(k => { if (m[k] !== m.orig[k]) v[k] = m[k] || null; });
-        if (Object.keys(v).length) await saveDates(v, true);
+        if (v.birthday !== undefined) await saveDates({ birthday: v.birthday }, true);
+        /* fase e datas do casal: só o que mudou; trocar de fase não apaga datas já salvas */
+        const cv = {};
+        ["stage", "start", "engaged", "married", "met", "kiss"].forEach(k => { if (m[k] !== m.orig[k]) cv[k] = m[k] || null; });
+        if (Object.keys(cv).length) await saveCouple(cv);
+        /* outras datas importantes: apagar, editar e criar (o banco acerta os compromissos) */
+        const was = m.origRows, gone = was.filter(w => !rows.some(r => r.id === w.id)).map(w => w.id);
+        const changed = rows.filter(r => r.id && (w => w && (w.title !== r.title || w.date !== r.date))(was.find(x => x.id === r.id)));
+        const added = rows.filter(r => !r.id);
+        if (gone.length) await q(sb.from("couple_dates").delete().in("id", gone));
+        for (const r of changed) await q(sb.from("couple_dates").update({ title: r.title, date: r.date }).eq("id", r.id));
+        if (added.length) await q(sb.from("couple_dates").insert(added.map(r => ({ couple_id: S.couple.id, title: r.title, date: r.date, kind: r.kind }))));
+        await refreshCore();
         closeSheet(); render(true); toast("Perfil salvo.");
       },
       avatar: () => pickFiles("image/*,.heic", false, async files => {
@@ -1078,13 +1184,26 @@ async function addItem(text) {
   setTimeout(() => { const n = $("nitem"); if (n) n.focus(); }, 30);
 }
 /* texto colado com várias linhas: um item por linha, sem marcadores, na ordem colada */
-function parseLines(txt) {
-  return String(txt).split(/\r?\n/).map(l => {
-    let t = l.trim(), prev;
-    do { prev = t; t = t.replace(/^(?:[-*•·▪●○–—]\s+|\[[ xX]?\]\s*|[☐☑✓]\s*)/, "").trim(); } while (t !== prev);
-    return t.slice(0, 200);
-  }).filter(Boolean);
+/* texto vindo da área de transferência: sempre texto puro. Se só vier HTML (ou o "texto" for HTML cru), converte para linhas */
+function htmlToText(h) {
+  const doc = new DOMParser().parseFromString(String(h), "text/html");
+  doc.querySelectorAll("script,style,head,title").forEach(n => n.remove());
+  doc.querySelectorAll("br").forEach(b => b.replaceWith("\n"));
+  doc.querySelectorAll("div,p,li,ul,ol,h1,h2,h3,h4,h5,h6,tr,blockquote,pre").forEach(n => n.append("\n"));
+  return doc.body.textContent || "";
 }
+function clipText(e) {
+  const cd = e.clipboardData || window.clipboardData; if (!cd) return "";
+  let t = cd.getData("text/plain") || "";
+  const h = cd.getData("text/html");
+  if (!t.trim() && h) t = htmlToText(h);
+  else if (/<\/?(div|br|p|span|li|ul|ol|b|i|a)\b[^>]*>/i.test(t)) t = htmlToText(t);
+  return t;
+}
+const MARCA = /^(?:[-*•◦‣⁃·▪▫●○◌–—]\s+|\[[ xX✓✔]?\]\s*|[☐☑☒□■✓✔✅]\s*)/;
+/* uma linha de texto sem marcador de checklist/lista no começo */
+const limpaLinha = l => { let t = String(l).replace(/[\u00a0\u200b\ufeff]/g, " ").trim(), prev; do { prev = t; t = t.replace(MARCA, "").trim(); } while (t !== prev); return t.slice(0, 200); };
+function parseLines(txt) { return String(txt).split(/\r?\n/).map(limpaLinha).filter(Boolean); }
 async function addMany(lines) {
   const L = S.lists.find(l => l.id === UI.openList); if (!L) return;
   const base = nextPos(L.id);
@@ -1166,6 +1285,22 @@ function dragEnd(e) {
   D.rows.forEach(r => { r.style.transform = ""; r.classList.remove("dragging", "shifting"); });
   if (e && e.type === "pointercancel") return;
   if (D.to !== D.i0) moveItem(D.id, D.to);
+}
+/* copia título + itens, um por linha, em texto puro (sem marcas: cola limpo no Notas e no Us) */
+function copyText(txt) {
+  return new Promise(res => {
+    const fallback = () => {
+      const ta = document.createElement("textarea"); ta.value = txt; ta.setAttribute("readonly", ""); ta.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0";
+      document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, txt.length);
+      let ok = false; try { ok = document.execCommand("copy"); } catch (x) { } ta.remove(); res(ok);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(() => res(true), fallback); else fallback();
+  });
+}
+async function copyList() {
+  const L = S.lists.find(l => l.id === UI.openList); if (!L) return;
+  const ok = await copyText([L.title, ...itemsOf(L.id).map(i => i.text)].join("\n"));
+  toast(ok ? "Lista copiada." : "Não consegui copiar. Selecione os itens e copie.");
 }
 async function togglePin() {
   const L = S.lists.find(l => l.id === UI.openList); if (!L) return;
@@ -1430,7 +1565,7 @@ $("main").addEventListener("click", e => {
       catch (err) { toast(friendly(err)); }
     },
     "v-edit": openEditMedia, "v-del": deleteMedia,
-    novalista: () => newList(), voltarlista: () => { UI.openList = null; render(); }, fixar: togglePin, apagarlista: deleteList,
+    novalista: () => newList(), voltarlista: () => { UI.openList = null; render(); }, fixar: togglePin, apagarlista: deleteList, copiarlista: copyList,
     hoje: () => { const n = todayDate(); UI.calY = n.getFullYear(); UI.calM = n.getMonth(); UI.selDay = ymd(n); render(true); },
     evento: () => openEventForm(), calendarios: openCalendarios
   }[d.act];
@@ -1444,15 +1579,37 @@ view.addEventListener("submit", async e => {
   try { await addItem(v); } catch (err) { toast(friendly(err)); const n = $("nitem"); if (n) { n.disabled = false; n.value = v; } }
 });
 view.addEventListener("paste", e => {
-  if (e.target.id !== "nitem") return;
-  const txt = (e.clipboardData || window.clipboardData).getData("text") || "";
-  if (!/[\r\n]/.test(txt)) return;
-  const lines = parseLines(txt); e.preventDefault();
+  const el = e.target, novo = el.id === "nitem", edit = el.classList && el.classList.contains("tx-in");
+  if (!novo && !edit) return;
+  e.preventDefault();                         /* nunca deixa o navegador colar HTML */
+  const txt = clipText(e), lines = parseLines(txt);
   if (!lines.length) return;
-  const cut = lines.length > 100;
-  e.target.disabled = true;
-  addMany(lines.slice(0, 100)).then(() => { if (cut) toast("Entraram os 100 primeiros. Cole o resto de novo."); }, err => { toast(friendly(err)); const n = $("nitem"); if (n) n.disabled = false; });
+  if (novo && lines.length > 1) {
+    const cut = lines.length > 100;
+    el.disabled = true;
+    addMany(lines.slice(0, 100)).then(() => { if (cut) toast("Entraram os 100 primeiros. Cole o resto de novo."); }, err => { toast(friendly(err)); const n = $("nitem"); if (n) n.disabled = false; });
+    return;
+  }
+  /* uma linha só (ou edição de item): entra no cursor, em texto puro */
+  const piece = lines.join(" "), room = Math.max(0, 200 - (el.value.length - (el.selectionEnd - el.selectionStart)));
+  el.setRangeText(piece.slice(0, room), el.selectionStart, el.selectionEnd, "end");
+  if (edit) fitTA(el);
 });
+/* copiar da tela da lista (menu do sistema): só título e itens, em texto puro, sem botões nem rótulos */
+document.addEventListener("copy", e => {
+  if (UI.tab !== "listas") return;
+  const L = S.lists.find(l => l.id === UI.openList); if (!L) return;
+  if (e.target.matches && e.target.matches("textarea,input")) return;
+  const sel = window.getSelection(); if (!sel || sel.isCollapsed) return;
+  const rows = [...view.querySelectorAll(".citem[data-item]")].filter(r => sel.containsNode(r, true));
+  const tit = $("ltitle") && sel.containsNode($("ltitle"), true);
+  if (!rows.length && !tit) return;
+  const lines = rows.map(r => { const it = S.items.find(i => i.id === r.dataset.item); return it ? it.text : ""; }).filter(Boolean);
+  e.clipboardData.setData("text/plain", (tit ? [L.title, ...lines] : lines).join("\n"));
+  e.preventDefault();
+});
+/* colar com setRangeText não dispara "change": salva também ao sair do campo (não repete se nada mudou) */
+view.addEventListener("focusout", e => { if (e.target.classList && e.target.classList.contains("tx-in") && e.target.isConnected) saveItemText(e.target.dataset.edit, e.target); });
 view.addEventListener("pointerdown", e => { const g = e.target.closest("[data-grip]"); if (g) startDrag(e, g); });
 view.addEventListener("input", e => { if (e.target.classList && e.target.classList.contains("tx-in")) fitTA(e.target); });
 view.addEventListener("keydown", e => {

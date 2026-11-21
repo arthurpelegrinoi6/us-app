@@ -412,3 +412,21 @@ button:disabled{opacity:.55;cursor:default}
 .dbar i{flex:1;height:4px;border-radius:4px;background:var(--rose)}
 .dbar i.on{background:var(--red)}
 .help-row{font-size:12.5px;color:var(--ink-2);margin:0 2px 14px}
+
+/* botão secundário (Pular): abaixo do principal, no vermelho suave do app */
+.btn.soft{background:var(--rose);color:var(--red-deep);min-height:50px;margin-top:10px}
+
+/* perguntas do casal: opções grandes, múltipla escolha e linhas de datas */
+.pick-list{display:grid;gap:10px;margin:6px 0 4px}
+.pick-opt{display:flex;align-items:center;gap:12px;width:100%;min-height:56px;padding:12px 16px;border:1.5px solid var(--line-strong);border-radius:14px;font-weight:600;font-size:17px;text-align:left;background:#fff;color:var(--ink)}
+.pick-opt:active{background:var(--rose);border-color:var(--red)}
+.pick-opt .cb{width:24px;height:24px;border-radius:7px;border:1.5px solid #c8b6b9;display:grid;place-items:center;flex:none;color:#fff}
+.pick-opt .cb svg{opacity:0}
+.pick-opt[aria-pressed="true"]{border-color:var(--red);background:var(--rose);color:var(--red-deep)}
+.pick-opt[aria-pressed="true"] .cb{background:var(--red);border-color:var(--red)}
+.pick-opt[aria-pressed="true"] .cb svg{opacity:1}
+.kid{border-top:1px solid var(--line);padding-top:12px;margin-top:6px}
+.kid:first-of-type{border-top:0;padding-top:0;margin-top:0}
+.kid input{display:block;width:100%;font:inherit;font-size:16px;color:var(--ink);background:#fff;border:1.5px solid var(--line-strong);border-radius:12px;padding:12px 14px;min-height:48px;margin-bottom:8px;appearance:none;-webkit-appearance:none}
+.kid input:focus{outline:2px solid var(--red);outline-offset:1px;border-color:var(--red)}
+.field>.btn.ghost,.kid + .btn.ghost,form>.btn.ghost{margin-top:8px}
