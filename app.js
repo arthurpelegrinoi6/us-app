@@ -60,6 +60,7 @@ const IC = {
   pin: '<path d="M9 4h6l-1 6 3 3v2H7v-2l3-3Z"/><path d="M12 15v6"/>', lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
   note: '<path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/>', check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
   x: '<path d="M6 6l12 12M18 6 6 18"/>', copy: '<rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
+  grip: '<path d="M5 9h14M5 15h14"/>',
   edit: '<path d="M12 20h8"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>', pinfill: '<path d="M9 4h6l-1 6 3 3v2H7v-2l3-3Z" fill="currentColor"/><path d="M12 15v6"/>'
 };
 function ic(name, size = 22, sw = 2) {
@@ -143,9 +144,10 @@ async function fetchAll(table, build) {
   }
   return out;
 }
+const sortMembers = mem => mem.sort((a, b) => String(a.joined_at).localeCompare(String(b.joined_at)) || a.user_id.localeCompare(b.user_id));
 async function loadData() {
   const mem = await q(sb.from("couple_members").select("*"));
-  S.members = mem.sort((a, b) => String(a.joined_at).localeCompare(String(b.joined_at)) || a.user_id.localeCompare(b.user_id));
+  S.members = sortMembers(mem);
   if (!me()) { S.couple = null; return false; }
   const coupleId = me().couple_id;
   const [couple, media, trips, lists, items, events, cals] = await Promise.all([
@@ -153,7 +155,7 @@ async function loadData() {
     fetchAll("media", b => b.order("taken_at", { ascending: false }).order("created_at", { ascending: false }).order("id")),
     q(sb.from("trips").select("*").order("created_at", { ascending: false })),
     q(sb.from("lists").select("*").order("updated_at", { ascending: false })),
-    fetchAll("list_items", b => b.order("created_at", { ascending: true }).order("id")),
+    fetchAll("list_items", b => b.order("position", { ascending: true }).order("created_at", { ascending: true }).order("id")),
     q(sb.from("events").select("*").order("starts_on", { ascending: true })),
     sb.from("calendars").select("*").order("created_at", { ascending: true }).then(r => r.error ? [] : r.data, () => [])
   ]);
@@ -245,6 +247,53 @@ function showDateStep() {
     <div class="row-links"><button class="link" data-g="skipdate">Pular por agora</button></div></div>`);
 }
 
+/* ---- datas importantes: uma pergunta por vez ---- */
+const partnerName = () => { const p = partner(); return p && p.display_name ? p.display_name : "quem você ama"; };
+const DSTEP = {
+  birthday: () => ({ h: "Quando é o seu aniversário?", lede: `Só ${partnerName()} vê esse lembrete, um dia antes.`, label: "Seu aniversário" }),
+  met: () => ({ h: "Que dia vocês se conheceram?", lede: "Vira um lembrete todo ano, para os dois.", label: "Dia em que se conheceram" }),
+  kiss: () => ({ h: "E o primeiro beijo, quando foi?", lede: "Também vira um lembrete todo ano, para os dois.", label: "Dia do primeiro beijo" })
+};
+function startDates() {
+  const c = S.couple, steps = ["birthday"];
+  if (!c.met_on) steps.push("met");
+  if (!c.first_kiss_on) steps.push("kiss");
+  UI.dflow = { steps, i: 0, vals: {} };
+  showDatesStep();
+}
+function showDatesStep() {
+  const f = UI.dflow, k = f.steps[f.i], d = DSTEP[k](), n = f.steps.length, last = f.i === n - 1;
+  showGate(`<div class="center"><p class="stepno" role="status">${f.i + 1} de ${n}</p>
+    <div class="dbar" aria-hidden="true">${f.steps.map((_, j) => `<i class="${j <= f.i ? "on" : ""}"></i>`).join("")}</div>
+    <h1 class="step" style="margin-top:18px">${esc(d.h)}</h1><p class="lede">${esc(d.lede)}</p>
+    <p id="authmsg" class="msg" hidden></p>
+    <form data-form="datas" novalidate>
+      <label class="field"><span>${esc(d.label)}</span><input name="data" type="date" min="1900-01-01" max="${ymd(todayDate())}" value="${esc(f.vals[k] || "")}"></label>
+      <button class="btn" type="submit">${last ? "Concluir" : "Continuar"}</button>
+    </form>
+    <div class="row-links"><button class="link" data-g="skipdates">Pular</button></div></div>`);
+}
+async function datesAdvance(val) {
+  const f = UI.dflow; if (!f) return;
+  const k = f.steps[f.i];
+  if (val) f.vals[k] = val; else delete f.vals[k];
+  if (f.i < f.steps.length - 1) { f.i++; showDatesStep(); return; }
+  await saveDates(f.vals, true);
+  UI.dflow = null; enterApp();
+}
+/* grava as datas pelo banco (que também cria os compromissos). v só traz o que a pessoa mexeu; o resto fica como está */
+async function saveDates(v, mark) {
+  const c = S.couple, fields = ["birthday", "met", "kiss"].filter(k => k in v);
+  /* só vão os campos que a pessoa mexeu de propósito; o resto o banco deixa como está */
+  await q(sb.rpc("save_my_dates", { p_birthday: v.birthday || null, p_met_on: v.met || null, p_first_kiss_on: v.kiss || null, p_mark_onboarded: !!mark, p_fields: fields }));
+  const [mem, cp, evs] = await Promise.all([
+    q(sb.from("couple_members").select("*")),
+    q(sb.from("couples").select("*").eq("id", c.id).single()),
+    q(sb.from("events").select("*").order("starts_on", { ascending: true }))
+  ]);
+  S.members = sortMembers(mem); S.couple = cp; S.events = evs;
+}
+
 const FORMS = {
   async entrar(f) {
     const email = f.email.value.trim(), senha = f.senha.value; UI.authEmail = email;
@@ -295,7 +344,13 @@ const FORMS = {
     const d = f.data.value;
     if (!d) return authMsg("err", "Escolha a data ou toque em Pular por agora.");
     await q(sb.from("couples").update({ start_date: d }).eq("id", S.couple.id));
-    S.couple.start_date = d; UI.dateStep = false; enterApp();
+    S.couple.start_date = d; UI.dateStep = false; proceed();
+  },
+  async datas(f) {
+    const v = f.data.value;
+    if (!v) return authMsg("err", "Escolha a data ou toque em Pular.");
+    if (v > ymd(todayDate()) || v < "1900-01-01") return authMsg("err", "Essa data não vale. Confira o dia, o mês e o ano.");
+    await datesAdvance(v);
   }
 };
 function onbErr(e) {
@@ -312,7 +367,7 @@ gate.addEventListener("submit", async e => {
   try { await FORMS[f.dataset.form](f); }
   catch (err) {
     if (/already in a couple/i.test(String(err && err.message))) { boot(); return; }
-    authMsg("err", onbErr(err) || (f.dataset.form === "onb" || f.dataset.form === "data" ? friendly(err) : authErr(err)));
+    authMsg("err", onbErr(err) || (f.dataset.form === "onb" || f.dataset.form === "data" || f.dataset.form === "datas" ? friendly(err) : authErr(err)));
   }
   if (btn.isConnected) { btn.disabled = false; btn.textContent = label; }
 });
@@ -323,7 +378,8 @@ gate.addEventListener("click", async e => {
   else if (a === "mode") { const f = gate.querySelector("input[name=nome]"); if (f) UI.onbName = f.value; UI.onbMode = t.dataset.v; showOnboarding(); }
   else if (a === "retry") boot();
   else if (a === "signout") signOut();
-  else if (a === "skipdate") { UI.dateStep = false; enterApp(); }
+  else if (a === "skipdate") { UI.dateStep = false; proceed(); }
+  else if (a === "skipdates") { if (t.disabled) return; t.disabled = true; try { await datesAdvance(null); } catch (err) { authMsg("err", friendly(err)); } if (t.isConnected) t.disabled = false; }
 });
 async function signOut() {
   try { await dropPushOnSignOut(); } catch (e) { /* segue mesmo assim */ }
@@ -332,7 +388,7 @@ async function signOut() {
 }
 function resetState() {
   Object.assign(S, { user: null, members: [], couple: null, media: [], trips: [], lists: [], items: [], events: [], calendars: [], loaded: false });
-  Object.assign(UI, { tab: "feed", openList: null, panel: null, viewer: null, dateStep: false });
+  Object.assign(UI, { tab: "feed", openList: null, panel: null, viewer: null, dateStep: false, dflow: null });
   urlCache.clear(); closePanel(true); closeViewer(true); closeSheet();
 }
 
@@ -349,9 +405,11 @@ async function bootRun() {
     const has = await loadData();
     if (!has) { showOnboarding(); return; }
     if (UI.dateStep) { showDateStep(); return; }
-    enterApp();
+    proceed();
   } catch (e) { errorGate(e); }
 }
+/* depois do cadastro: quem ainda não passou pelas datas importantes responde agora (uma vez só) */
+function proceed() { const m = me(); if (m && !m.dates_onboarded_at) startDates(); else enterApp(); }
 function enterApp() {
   gate.hidden = true; app.hidden = false;
   document.querySelectorAll(".tab").forEach(t => t.dataset.tab === UI.tab ? t.setAttribute("aria-current", "page") : t.removeAttribute("aria-current"));
@@ -365,6 +423,7 @@ function render(keep) {
   view.innerHTML = { feed: feedHTML, fotos: fotosHTML, listas: listasHTML, cal: calHTML }[UI.tab]();
   $("fab").innerHTML = UI.tab === "listas" && UI.openList === null ? `<button class="compose" data-act="novalista" aria-label="Nova lista">${ic("edit", 22)}</button>` : "";
   view.scrollTop = keep ? y : 0;
+  fitAll();
   document.querySelectorAll(".tab").forEach(t => t.dataset.tab === UI.tab ? t.setAttribute("aria-current", "page") : t.removeAttribute("aria-current"));
   hydrate();
 }
@@ -383,8 +442,8 @@ function tile(m, extra = "") {
 function aboutHTML() {
   const c = S.couple;
   if (c.about_mode === "musica") {
-    if (c.song_title) return `<div class="about"><div class="song-line"><span class="note">${ic("note", 18, 1.9)}</span><div style="min-width:0"><div class="lbl">A música de vocês</div><div class="tt">${esc(c.song_title)}${c.song_artist ? ` <span>· ${esc(c.song_artist)}</span>` : ""}</div></div></div></div>`;
-    return `<div class="addlink"><button class="link" data-act="editar">Adicionar a música de vocês</button></div>`;
+    if (c.song_title) return `<div class="about"><div class="song-line"><span class="note">${ic("note", 18, 1.9)}</span><div style="min-width:0"><div class="lbl">A música do casal</div><div class="tt">${esc(c.song_title)}${c.song_artist ? ` <span>· ${esc(c.song_artist)}</span>` : ""}</div></div></div></div>`;
+    return `<div class="addlink"><button class="link" data-act="editar">Adicionar a música do casal</button></div>`;
   }
   if (c.about_mode === "frase") {
     if (c.phrase) return `<div class="about"><div class="quote"><p>“${esc(c.phrase)}”</p></div></div>`;
@@ -512,7 +571,8 @@ function openViewer(id) { UI.viewer = id; renderViewer(); viewer.scrollTop = 0; 
 function closeViewer(quick) { UI.viewer = null; viewer.classList.remove("on"); const v = viewer.querySelector("video"); if (v) v.pause(); if (quick) viewer.innerHTML = ""; }
 
 /* ---- listas ---- */
-const itemsOf = id => S.items.filter(i => i.list_id === id);
+const cmpItem = (a, b) => (a.position - b.position) || String(a.created_at).localeCompare(String(b.created_at)) || a.id.localeCompare(b.id);
+const itemsOf = id => S.items.filter(i => i.list_id === id).sort(cmpItem);
 function listPreview(L) {
   const its = itemsOf(L.id); if (!its.length) return "Sem itens";
   const open = its.filter(i => !i.done).map(i => i.text);
@@ -550,7 +610,7 @@ function noteHTML() {
     <div class="lnote-date">Atualizada ${esc(relDay(L.updated_at))}</div>
     <label class="sr" for="ltitle" style="position:absolute;left:-9999px">Título da lista</label>
     <input class="title-in" id="ltitle" value="${esc(L.title)}" maxlength="120" autocomplete="off" enterkeyhint="done">
-    ${its.length ? its.map(it => `<div class="citem ${it.done ? "done" : ""}"><button class="cbox" data-check="${it.id}" aria-pressed="${it.done}" aria-label="${it.done ? "Desmarcar" : "Marcar"}: ${esc(it.text)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></button><div class="body"><div class="tx">${esc(it.text)}</div><div class="by">${esc(nameOf(it.created_by))}</div></div><button class="del" data-delitem="${it.id}" aria-label="Apagar item: ${esc(it.text)}">${ic("x", 18, 2)}</button></div>`).join("") : `<p class="empty-note">Lista vazia. Escreva o primeiro item aqui embaixo.</p>`}
+    ${its.length ? its.map(it => `<div class="citem ${it.done ? "done" : ""}" data-item="${it.id}"><button class="cbox" data-check="${it.id}" aria-pressed="${it.done}" aria-label="${it.done ? "Desmarcar" : "Marcar"}: ${esc(it.text)}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></button><div class="body"><textarea class="tx-in" rows="1" maxlength="200" data-edit="${it.id}" enterkeyhint="done" autocomplete="off" aria-label="Texto do item">${esc(it.text)}</textarea></div><button class="grip" data-grip="${it.id}" aria-label="Arrastar para mudar a ordem: ${esc(it.text)}">${ic("grip", 20, 2)}</button><button class="del" data-delitem="${it.id}" aria-label="Apagar item: ${esc(it.text)}">${ic("x", 18, 2)}</button></div>`).join("") : `<p class="empty-note">Lista vazia. Escreva o primeiro item aqui embaixo.</p>`}
     <form class="nadd" id="nadd"><span class="cbox" aria-hidden="true"></span><label for="nitem" style="position:absolute;left:-9999px">Novo item</label><input id="nitem" placeholder="Novo item" autocomplete="off" maxlength="200" enterkeyhint="done"></form>
   </div>`;
 }
@@ -569,7 +629,28 @@ const evVisible = e => !HID.has(calOf(e) ? e.calendar_id : "casal");
 const evEnd = e => e.ends_on || e.starts_on;
 const evTime = e => String(e.start_time || "").slice(0, 5) || e.time_label || "";
 const sortEv = (a, b) => a.starts_on.localeCompare(b.starts_on) || evTime(a).localeCompare(evTime(b));
-const evsOn = ds => S.events.filter(e => evVisible(e) && e.starts_on <= ds && evEnd(e) >= ds);
+const isLeap = y => y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0);
+/* dia em que um compromisso anual cai no ano y (29/02 vira 28/02 em ano sem bissexto); antes do ano original, nenhum */
+function occIn(e, y) {
+  const [sy, sm, sd] = e.starts_on.slice(0, 10).split("-").map(Number);
+  if (y < sy) return null;
+  const d = sm === 2 && sd === 29 && !isLeap(y) ? 28 : sd;
+  return `${y}-${pad(sm)}-${pad(d)}`;
+}
+const occ = (e, on) => e.repeats_yearly ? Object.assign({}, e, { starts_on: on, ends_on: null }) : e;
+const evsOn = ds => S.events.filter(e => evVisible(e) && (e.repeats_yearly ? occIn(e, +ds.slice(0, 4)) === ds : e.starts_on <= ds && evEnd(e) >= ds));
+/* próximos compromissos depois de um dia (os anuais entram com a próxima data em que caem) */
+function upcoming(after, n) {
+  const y0 = +after.slice(0, 4), out = [];
+  S.events.filter(evVisible).forEach(e => {
+    if (e.repeats_yearly) {
+      let on = occIn(e, Math.max(y0, +e.starts_on.slice(0, 4)));
+      if (on <= after) on = occIn(e, +on.slice(0, 4) + 1);
+      out.push(occ(e, on));
+    } else if (e.starts_on > after) out.push(e);
+  });
+  return out.sort(sortEv).slice(0, n);
+}
 function rangeShort(a, b) {
   const da = parseYmd(a), db = parseYmd(b), yr = db.getFullYear() !== todayDate().getFullYear() ? " " + db.getFullYear() : "";
   if (da.getFullYear() === db.getFullYear() && da.getMonth() === db.getMonth()) return `${da.getDate()} a ${db.getDate()} ${MES[db.getMonth()]}${yr}`;
@@ -586,23 +667,22 @@ function calHTML() {
     cells += `<button class="dcell ${ds === todayS ? "today" : ""} ${ds === UI.selDay ? "sel" : ""}" data-day="${ds}" aria-pressed="${ds === UI.selDay}" aria-label="${d} de ${MESL[mo]}${evs.length ? `, ${plural(evs.length, "compromisso", "compromissos")}` : ""}"><span class="n">${d}</span><span class="ds">${cores.map(c => `<i style="--c:${c}"></i>`).join("")}</span></button>`;
   }
   const sel = parseYmd(UI.selDay);
-  const dayEvs = evsOn(UI.selDay).sort(sortEv);
-  const later = S.events.filter(e => evVisible(e) && e.starts_on > UI.selDay).sort(sortEv).slice(0, 4);
+  const dayEvs = evsOn(UI.selDay).map(e => occ(e, UI.selDay)).sort(sortEv);
+  const later = upcoming(UI.selDay, 4);
   const evRow = (e, withDate) => {
-    const multi = evEnd(e) > e.starts_on, d = parseYmd(e.starts_on), cal = calOf(e), tempo = evTime(e);
+    const multi = evEnd(e) > e.starts_on, d = parseYmd(e.starts_on), cal = calOf(e), tempo = evTime(e), auto = !!e.auto_key;
     let quando = "";
     if (withDate) quando = multi ? rangeShort(e.starts_on, e.ends_on) : `${SEM[d.getDay()]}, ${d.getDate()} ${MES[d.getMonth()]}${d.getFullYear() !== todayDate().getFullYear() ? " " + d.getFullYear() : ""}`;
     else if (multi) quando = `Dia ${dayDiff(parseYmd(UI.selDay), d) + 1} de ${dayDiff(parseYmd(e.ends_on), d) + 1} · ${rangeShort(e.starts_on, e.ends_on)}`;
-    const sub = [quando, cal ? cal.name : "", whoName(e.who_user)].filter(Boolean).map(esc).join(" · ");
+    const sub = [quando, cal ? cal.name : "", auto ? "" : whoName(e.who_user)].filter(Boolean).map(esc).join(" · ");
     const tm = withDate ? tempo : (multi && UI.selDay !== e.starts_on ? "" : (tempo || "dia todo"));
-    return `<div class="evt" style="--c:${evColor(e)}"><span class="bar"></span><button class="evbody" data-ev="${e.id}" aria-label="Editar compromisso: ${esc(e.title)}"><b>${esc(e.title)}</b><span>${sub}</span>${e.note ? `<span class="note-ev">${esc(e.note)}</span>` : ""}</button><div class="tm">${esc(tm)}</div><button class="del" data-delev="${e.id}" aria-label="Apagar compromisso: ${esc(e.title)}">${ic("trash", 18, 1.9)}</button></div>`;
+    return `<div class="evt" style="--c:${evColor(e)}"><span class="bar"></span><button class="evbody" data-ev="${e.id}" aria-label="${auto ? "Data do perfil" : "Editar compromisso"}: ${esc(e.title)}"><b>${esc(e.title)}</b><span>${sub}</span>${e.note ? `<span class="note-ev">${esc(e.note)}</span>` : ""}</button><div class="tm">${esc(tm)}</div>${auto ? "" : `<button class="del" data-delev="${e.id}" aria-label="Apagar compromisso: ${esc(e.title)}">${ic("trash", 18, 1.9)}</button>`}</div>`;
   };
-  const next = S.events.filter(e => evVisible(e) && e.starts_on > todayS).sort(sortEv)[0];
-  let card = "";
-  if (next) {
+  /* contagem regressiva: só dos compromissos marcados com essa opção, do mais perto ao mais longe */
+  const card = S.events.filter(e => e.countdown && evVisible(e) && e.starts_on > todayS).sort(sortEv).map(next => {
     const n = dayDiff(parseYmd(next.starts_on), todayDate()), multi = evEnd(next) > next.starts_on;
-    card = `<div class="count-card"><div><div class="t">${esc(next.title)}</div><span>${esc(multi ? rangeShort(next.starts_on, next.ends_on) : fmtLong(next.starts_on))}${evTime(next) ? " · " + esc(evTime(next)) : ""}</span></div><div style="text-align:right"><b>${fmtN(n)}</b><span style="display:block">${n === 1 ? "dia" : "dias"}</span></div></div>`;
-  }
+    return `<div class="count-card"><div><div class="t">${esc(next.title)}</div><span>${esc(multi ? rangeShort(next.starts_on, next.ends_on) : fmtLong(next.starts_on))}${evTime(next) ? " · " + esc(evTime(next)) : ""}</span></div><div style="text-align:right"><b>${fmtN(n)}</b><span style="display:block">${n === 1 ? "dia" : "dias"}</span></div></div>`;
+  }).join("");
   const leg = [];
   if (!HID.has("casal")) leg.push(["Do casal", CASAL_COR]);
   S.calendars.filter(c => !HID.has(c.id)).forEach(c => leg.push([c.name, c.color]));
@@ -634,7 +714,7 @@ function openSheet(def, push) {
   const f = sheetEl.querySelector("input:not([type=hidden]),textarea");
   if (f && def.focus !== false) setTimeout(() => f.focus({ preventScroll: true }), 380);
 }
-function closeSheet() { SH = null; SHSTACK = []; sheetEl.classList.remove("on"); scrimEl.classList.remove("on"); }
+function closeSheet() { SH = null; SHSTACK = []; sheetEl.classList.remove("on"); scrimEl.classList.remove("on"); const sh = $("shell"); if (sh) { sh.scrollTop = 0; sh.scrollLeft = 0; } }
 function sheetBack() { const p = SHSTACK.pop(); if (p) { SH = p; drawSheet(); } else closeSheet(); }
 scrimEl.addEventListener("click", closeSheet);
 document.addEventListener("keydown", e => { if (e.key === "Escape" && SH) closeSheet(); });
@@ -771,7 +851,7 @@ function openPicker(o) {
 /* ============ ações: perfil ============ */
 function openProfile() {
   const c = S.couple, mm = me();
-  const m = { push: "checking", about: c.about_mode, song_title: c.song_title || "", song_artist: c.song_artist || "", phrase: c.phrase || "", nome: mm.display_name || "", start: c.start_date || "", err: "" };
+  const m = { push: "checking", about: c.about_mode, song_title: c.song_title || "", song_artist: c.song_artist || "", phrase: c.phrase || "", nome: mm.display_name || "", start: c.start_date || "", birthday: mm.birthday || "", met: c.met_on || "", kiss: c.first_kiss_on || "", orig: { birthday: mm.birthday || "", met: c.met_on || "", kiss: c.first_kiss_on || "" }, err: "" };
   const def = {
     model: m, focus: false,
     view: () => `<h3>Editar perfil</h3><p class="hint">O que aparece embaixo dos nomes de vocês.</p>
@@ -784,6 +864,9 @@ function openProfile() {
       ${m.about === "frase" ? `<label class="field"><span>A frase de vocês</span><textarea data-m="phrase" maxlength="200" rows="2">${esc(m.phrase)}</textarea></label>` : ""}
       <label class="field"><span>Seu nome</span><input data-m="nome" maxlength="60" value="${esc(m.nome)}" autocomplete="given-name"></label>
       <label class="field"><span>Início do namoro</span><input type="date" data-m="start" max="${ymd(todayDate())}" value="${esc(m.start)}"></label>
+      <label class="field"><span>Seu aniversário</span><input type="date" data-m="birthday" min="1900-01-01" max="${ymd(todayDate())}" value="${esc(m.birthday)}"><span class="help">Só ${esc(partnerName())} vê esse lembrete, um dia antes.</span></label>
+      <label class="field"><span>Dia em que se conheceram</span><input type="date" data-m="met" min="1900-01-01" max="${ymd(todayDate())}" value="${esc(m.met)}"></label>
+      <label class="field"><span>Dia do primeiro beijo</span><input type="date" data-m="kiss" min="1900-01-01" max="${ymd(todayDate())}" value="${esc(m.kiss)}"></label>
       <button class="cover-row" type="button" data-s="avatar"><span class="th" style="width:44px;height:44px;border-radius:50%;display:grid;place-items:center;font-family:var(--f-display);font-style:italic;font-size:22px;color:var(--red)">${mm.avatar_path ? imgTag(mm.avatar_path, "") : esc((mm.display_name || "?").charAt(0).toUpperCase())}</span><span><b style="display:block;font-size:15.5px">Sua foto</b><span style="font-size:13px;color:var(--ink-2)">${mm.avatar_path ? "Trocar a foto do seu perfil" : "Escolher uma foto sua"}</span></span></button>
       <button class="cover-row" type="button" data-s="capa"><span class="th ${c.cover_path ? "" : "none"}">${c.cover_path ? imgTag(c.cover_path, "") : ""}</span><span><b style="display:block;font-size:15.5px">Trocar foto de capa</b><span style="font-size:13px;color:var(--ink-2)">Escolher entre as fotos de vocês ou enviar uma nova</span></span></button>
       <div class="push-box"><b>Notificações dos compromissos</b><p class="d">${esc(PUSH_TXT[m.push] || "")}</p>${m.push === "on" ? '<button type="button" class="btn ghost" data-s="pushoff">Desativar neste aparelho</button>' : m.push === "off" ? '<button type="button" class="btn ghost" data-s="pushon">Ativar neste aparelho</button>' : ""}</div>
@@ -795,12 +878,18 @@ function openProfile() {
       submit: async () => {
         const nome = m.nome.trim();
         if (!nome) { m.err = "Escreva o seu nome."; drawSheet(); return; }
+        const hoje = ymd(todayDate());
+        if ([m.birthday, m.met, m.kiss].some(x => x && (x > hoje || x < "1900-01-01"))) { m.err = "Alguma data não vale. Confira o dia, o mês e o ano."; drawSheet(); return; }
         const patch = { about_mode: m.about, song_title: m.song_title.trim() || null, song_artist: m.song_artist.trim() || null, phrase: m.phrase.trim() || null, start_date: m.start || null };
         const [c2, m2] = await Promise.all([
           q(sb.from("couples").update(patch).eq("id", S.couple.id).select().single()),
           q(sb.from("couple_members").update({ display_name: nome }).eq("user_id", S.user.id).select().single())
         ]);
         S.couple = c2; Object.assign(me(), m2);
+        /* só manda o que mudou em relação ao que o formulário mostrava ao abrir */
+        const v = {};
+        ["birthday", "met", "kiss"].forEach(k => { if (m[k] !== m.orig[k]) v[k] = m[k] || null; });
+        if (Object.keys(v).length) await saveDates(v, true);
         closeSheet(); render(true); toast("Perfil salvo.");
       },
       avatar: () => pickFiles("image/*,.heic", false, async files => {
@@ -981,11 +1070,102 @@ async function deleteItem(id) {
   try { await q(sb.from("list_items").delete().eq("id", id)); S.items = S.items.filter(i => i.id !== id); touchList(it.list_id); render(true); }
   catch (e) { toast(friendly(e)); }
 }
+const nextPos = listId => itemsOf(listId).reduce((mx, i) => Math.max(mx, i.position), 0) + 1;
 async function addItem(text) {
   const L = S.lists.find(l => l.id === UI.openList); if (!L) return;
-  const it = await q(sb.from("list_items").insert({ list_id: L.id, couple_id: S.couple.id, text }).select().single());
+  const it = await q(sb.from("list_items").insert({ list_id: L.id, couple_id: S.couple.id, text, position: nextPos(L.id) }).select().single());
   S.items.push(it); touchList(L.id); render(true);
   setTimeout(() => { const n = $("nitem"); if (n) n.focus(); }, 30);
+}
+/* texto colado com várias linhas: um item por linha, sem marcadores, na ordem colada */
+function parseLines(txt) {
+  return String(txt).split(/\r?\n/).map(l => {
+    let t = l.trim(), prev;
+    do { prev = t; t = t.replace(/^(?:[-*•·▪●○–—]\s+|\[[ xX]?\]\s*|[☐☑✓]\s*)/, "").trim(); } while (t !== prev);
+    return t.slice(0, 200);
+  }).filter(Boolean);
+}
+async function addMany(lines) {
+  const L = S.lists.find(l => l.id === UI.openList); if (!L) return;
+  const base = nextPos(L.id);
+  const rows = await q(sb.from("list_items").insert(lines.map((text, i) => ({ list_id: L.id, couple_id: S.couple.id, text, position: base + i }))).select());
+  S.items.push(...rows); touchList(L.id); render(true);
+  setTimeout(() => { const n = $("nitem"); if (n) n.focus(); }, 30);
+}
+async function saveItemText(id, el) {
+  const it = S.items.find(i => i.id === id); if (!it) return;
+  const v = el.value.replace(/\s+/g, " ").trim();
+  if (!v) { el.value = it.text; fitTA(el); return; }
+  if (v === it.text) { el.value = v; fitTA(el); return; }
+  const old = it.text; it.text = v; el.value = v; fitTA(el);
+  try { await q(sb.from("list_items").update({ text: v }).eq("id", id)); touchList(it.list_id); }
+  catch (e) { it.text = old; if (el.isConnected) { el.value = old; fitTA(el); } toast(friendly(e)); }
+}
+const fitTA = el => { el.style.height = "auto"; el.style.height = el.scrollHeight + "px"; };
+const fitAll = () => view.querySelectorAll(".tx-in").forEach(fitTA);
+
+/* mudar a ordem: troca o item de lugar e grava só a posição dele (ou renumera a lista se os vizinhos ficaram colados) */
+async function moveItem(id, to) {
+  const it = S.items.find(i => i.id === id); if (!it) return;
+  const all = itemsOf(it.list_id), from = all.findIndex(i => i.id === id);
+  if (from < 0 || to < 0 || to >= all.length || to === from) return;
+  const rest = all.filter(i => i.id !== id), prev = rest[to - 1], next = rest[to];
+  const before = new Map(all.map(i => [i.id, i.position]));
+  let pos;
+  if (!prev) pos = next.position - 1;
+  else if (!next) pos = prev.position + 1;
+  else pos = (prev.position + next.position) / 2;
+  const gap = prev && next ? next.position - prev.position : 1;
+  let changed;
+  if (gap < 1e-6) {
+    rest.splice(to, 0, it); rest.forEach((x, i) => { x.position = i + 1; });
+    changed = rest.filter(x => x.position !== before.get(x.id));
+  } else { it.position = pos; changed = [it]; }
+  render(true);
+  try { await Promise.all(changed.map(x => q(sb.from("list_items").update({ position: x.position }).eq("id", x.id)))); touchList(it.list_id); }
+  catch (e) { all.forEach(x => { x.position = before.get(x.id); }); render(true); toast(friendly(e)); }
+}
+let DRAG = null;
+function startDrag(e, grip) {
+  if (DRAG || (e.button != null && e.button !== 0)) return;
+  const row = grip.closest(".citem"); if (!row) return;
+  const rows = [...row.parentElement.querySelectorAll(".citem[data-item]")], i0 = rows.indexOf(row);
+  DRAG = { id: row.dataset.item, row, rows, i0, to: i0, y0: e.clientY, y: e.clientY, sc0: view.scrollTop, h: row.offsetHeight, mids: rows.map(r => r.offsetTop + r.offsetHeight / 2), raf: 0, grip, pid: e.pointerId };
+  try { grip.setPointerCapture(e.pointerId); } catch (x) { }
+  row.classList.add("dragging"); rows.forEach(r => { if (r !== row) r.classList.add("shifting"); });
+  grip.addEventListener("pointermove", dragMove); grip.addEventListener("pointerup", dragEnd); grip.addEventListener("pointercancel", dragEnd);
+  dragLoop();
+}
+function dragPlace() {
+  const D = DRAG; if (!D) return;
+  const dy = (D.y - D.y0) + (view.scrollTop - D.sc0), center = D.mids[D.i0] + dy;
+  let to = 0; D.mids.forEach((m, j) => { if (j !== D.i0 && m < center) to++; });
+  D.to = to;
+  D.row.style.transform = `translateY(${dy}px)`;
+  D.rows.forEach((r, j) => {
+    if (j === D.i0) return;
+    const shift = D.to > D.i0 && j > D.i0 && j <= D.to ? -D.h : D.to < D.i0 && j >= D.to && j < D.i0 ? D.h : 0;
+    r.style.transform = shift ? `translateY(${shift}px)` : "";
+  });
+}
+function dragMove(e) { if (!DRAG || e.pointerId !== DRAG.pid) return; DRAG.y = e.clientY; dragPlace(); }
+/* rola a tela quando o dedo chega perto da borda */
+function dragLoop() {
+  const D = DRAG; if (!D) return;
+  const r = view.getBoundingClientRect(), edge = 70;
+  let v = 0;
+  if (D.y < r.top + edge) v = -Math.ceil((r.top + edge - D.y) / 6);
+  else if (D.y > r.bottom - edge) v = Math.ceil((D.y - (r.bottom - edge)) / 6);
+  if (v) { view.scrollTop += Math.max(-18, Math.min(18, v)); dragPlace(); }
+  D.raf = requestAnimationFrame(dragLoop);
+}
+function dragEnd(e) {
+  const D = DRAG; if (!D || (e && e.pointerId !== D.pid)) return;
+  DRAG = null; cancelAnimationFrame(D.raf);
+  D.grip.removeEventListener("pointermove", dragMove); D.grip.removeEventListener("pointerup", dragEnd); D.grip.removeEventListener("pointercancel", dragEnd);
+  D.rows.forEach(r => { r.style.transform = ""; r.classList.remove("dragging", "shifting"); });
+  if (e && e.type === "pointercancel") return;
+  if (D.to !== D.i0) moveItem(D.id, D.to);
 }
 async function togglePin() {
   const L = S.lists.find(l => l.id === UI.openList); if (!L) return;
@@ -1010,7 +1190,7 @@ function openEventForm(ev) {
   const m = {
     title: ev ? ev.title : "", cal: ev && ev.calendar_id && calOf(ev) ? ev.calendar_id : "", allday: ev ? !evTime(ev) : true,
     date: ev ? ev.starts_on : UI.selDay, time: ev ? evTime(ev) : "", end: ev && ev.ends_on ? ev.ends_on : "", who: ev && ev.who_user ? ev.who_user : "",
-    alert: ev && ev.alert_minutes != null ? String(ev.alert_minutes) : "", note: ev && ev.note ? ev.note : "", err: ""
+    alert: ev && ev.alert_minutes != null ? String(ev.alert_minutes) : "", note: ev && ev.note ? ev.note : "", countdown: !!(ev && ev.countdown), err: ""
   };
   const cals = [["", "Do casal", CASAL_COR], ...S.calendars.map(c => [c.id, c.name, c.color])];
   openSheet({
@@ -1030,6 +1210,8 @@ function openEventForm(ev) {
         <button type="button" data-s="who" data-v="" aria-pressed="${m.who === ""}">Os dois</button>
         ${S.members.map(x => `<button type="button" data-s="who" data-v="${x.user_id}" aria-pressed="${m.who === x.user_id}">${esc(x.display_name || "Alguém")}</button>`).join("")}</div></div>
       <label class="field"><span>Alerta</span><select data-m="alert">${(m.allday ? ALERTAS_DIA : ALERTAS).map(([v, t]) => `<option value="${v}" ${m.alert === v ? "selected" : ""}>${t}</option>`).join("")}</select></label>
+      <button type="button" class="tgl-row" role="switch" aria-checked="${m.countdown}" data-s="countdown" style="margin-bottom:4px"><span>Contagem regressiva</span><span class="tgl"></span></button>
+      <p class="help-row">Mostra na agenda quantos dias faltam.</p>
       <label class="field"><span>Observação (opcional)</span><input data-m="note" maxlength="300" value="${esc(m.note)}" autocomplete="off"></label>
       <button class="btn" type="submit">${ev ? "Salvar alterações" : "Salvar compromisso"}</button>
       ${ev ? `<button type="button" class="btn warn" data-s="apagar">Apagar compromisso</button>` : ""}</form>`,
@@ -1037,6 +1219,7 @@ function openEventForm(ev) {
       cal: t => { m.cal = t.dataset.v; drawSheet(); },
       allday: () => { m.allday = !m.allday; if (m.allday && !ALERTAS_DIA.some(a => a[0] === m.alert)) m.alert = ""; drawSheet(); },
       who: t => { m.who = t.dataset.v; drawSheet(); },
+      countdown: () => { m.countdown = !m.countdown; drawSheet(); },
       apagar: () => deleteEvent(ev.id),
       submit: async () => {
         if (!m.title.trim()) { m.err = "Dê um nome para o compromisso."; drawSheet(); return; }
@@ -1046,7 +1229,7 @@ function openEventForm(ev) {
         const row = {
           title: m.title.trim(), starts_on: m.date, ends_on: m.end && m.end > m.date ? m.end : null,
           start_time: m.allday ? null : m.time, time_label: m.allday ? null : m.time,
-          calendar_id: m.cal || null, who_user: m.who || null, alert_minutes: m.alert === "" ? null : +m.alert, note: m.note.trim() || null
+          calendar_id: m.cal || null, who_user: m.who || null, alert_minutes: m.alert === "" ? null : +m.alert, note: m.note.trim() || null, countdown: !!m.countdown
         };
         let saved;
         if (ev) {
@@ -1229,7 +1412,7 @@ $("main").addEventListener("click", e => {
   if (d.check) return toggleItem(d.check);
   if (d.delitem) return deleteItem(d.delitem);
   if (d.delev) return deleteEvent(d.delev);
-  if (d.ev) { const x = S.events.find(v => v.id === d.ev); return x && openEventForm(x); }
+  if (d.ev) { const x = S.events.find(v => v.id === d.ev); if (x && x.auto_key) return toast("Essa data vem do perfil. Para mudar, toque em Editar perfil."); return x && openEventForm(x); }
   if (d.sug) { if (sugBusy) return; const x = SUG_LISTAS[+d.sug]; if (!x) return; sugBusy = true; return newList(`${x[0]} ${x[1]}`).finally(() => { sugBusy = false; }); }
   if (d.day) { UI.selDay = d.day; return render(true); }
   if (d.mon) {
@@ -1260,7 +1443,30 @@ view.addEventListener("submit", async e => {
   i.disabled = true;
   try { await addItem(v); } catch (err) { toast(friendly(err)); const n = $("nitem"); if (n) { n.disabled = false; n.value = v; } }
 });
+view.addEventListener("paste", e => {
+  if (e.target.id !== "nitem") return;
+  const txt = (e.clipboardData || window.clipboardData).getData("text") || "";
+  if (!/[\r\n]/.test(txt)) return;
+  const lines = parseLines(txt); e.preventDefault();
+  if (!lines.length) return;
+  const cut = lines.length > 100;
+  e.target.disabled = true;
+  addMany(lines.slice(0, 100)).then(() => { if (cut) toast("Entraram os 100 primeiros. Cole o resto de novo."); }, err => { toast(friendly(err)); const n = $("nitem"); if (n) n.disabled = false; });
+});
+view.addEventListener("pointerdown", e => { const g = e.target.closest("[data-grip]"); if (g) startDrag(e, g); });
+view.addEventListener("input", e => { if (e.target.classList && e.target.classList.contains("tx-in")) fitTA(e.target); });
+view.addEventListener("keydown", e => {
+  const g = e.target.closest && e.target.closest("[data-grip]");
+  if (g && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+    e.preventDefault();
+    const it = S.items.find(i => i.id === g.dataset.grip); if (!it) return;
+    const idx = itemsOf(it.list_id).findIndex(i => i.id === it.id);
+    moveItem(it.id, idx + (e.key === "ArrowUp" ? -1 : 1)).then(() => { const n = view.querySelector(`[data-grip="${it.id}"]`); if (n) n.focus(); });
+  }
+  if (e.key === "Enter" && !e.shiftKey && e.target.classList && e.target.classList.contains("tx-in")) { e.preventDefault(); e.target.blur(); }
+});
 view.addEventListener("change", async e => {
+  if (e.target.classList && e.target.classList.contains("tx-in")) { saveItemText(e.target.dataset.edit, e.target); return; }
   if (e.target.id !== "ltitle") return;
   const L = S.lists.find(l => l.id === UI.openList); if (!L) return;
   const v = e.target.value.trim();

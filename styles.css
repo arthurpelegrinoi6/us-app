@@ -41,8 +41,8 @@ button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:poin
 .song-line{display:flex;align-items:center;gap:14px;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:14px 2px}
 .song-line .note{width:42px;height:42px;border-radius:50%;background:var(--rose);color:var(--red);display:grid;place-items:center;flex:none}
 .song-line .lbl{font-size:12px;font-weight:600;color:var(--ink-3)}
-.song-line .tt{font-family:var(--f-display);font-size:21px;line-height:1.15;letter-spacing:-.015em;color:var(--ink)}
-.song-line .tt span{font-family:var(--f-ui);font-size:14px;color:var(--ink-2);letter-spacing:0}
+.song-line .tt{font-family:var(--f-display);font-size:17px;line-height:1.2;letter-spacing:-.01em;color:var(--ink)}
+.song-line .tt span{font-family:var(--f-ui);font-size:13px;color:var(--ink-2);letter-spacing:0}
 .quote{border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:18px 4px 16px;text-align:center}
 .quote p{font-family:var(--f-display);font-style:italic;font-size:25px;line-height:1.2;letter-spacing:-.015em;color:var(--red);margin:0;text-wrap:balance}
 .quote span{display:block;font-size:12px;color:var(--ink-3);margin-top:8px}
@@ -147,7 +147,6 @@ button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:poin
 .citem.done .cbox svg{opacity:1;transform:none}
 .citem .tx{font-size:17px;line-height:1.35}
 .citem.done .tx{color:var(--ink-3);text-decoration:line-through}
-.citem .by{font-size:12px;color:var(--ink-3)}
 .nadd{display:flex;gap:12px;align-items:center;padding:6px 20px}
 .nadd input{flex:1;min-width:0;border:0;outline:none;font:inherit;font-size:17px;color:var(--ink);background:transparent;padding:4px 0}
 .nadd input::placeholder{color:var(--ink-3)}
@@ -394,3 +393,22 @@ button:disabled{opacity:.55;cursor:default}
 .sug .e{font-size:24px;line-height:1;flex:none}
 .sug-h{font-size:12.5px;color:var(--ink-2);margin:8px 16px 0}
 @media (prefers-reduced-motion:reduce){.tgl,.tgl::after{transition:none}}
+
+/* listas: editar no lugar e arrastar para reordenar */
+.citem{position:relative}
+.citem .tx-in{display:block;width:100%;margin:0;padding:0;border:0;outline:0;background:transparent;resize:none;overflow:hidden;font:inherit;font-size:17px;line-height:1.35;color:var(--ink);border-radius:4px;overflow-wrap:anywhere}
+.citem .tx-in:focus-visible{outline:2px solid var(--red);outline-offset:3px}
+.citem.done .tx-in{color:var(--ink-3);text-decoration:line-through}
+.citem .grip{width:36px;height:44px;display:grid;place-items:center;color:var(--ink-3);flex:none;touch-action:none;cursor:grab;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+.citem .grip:active{cursor:grabbing}
+.citem.shifting{transition:transform .18s cubic-bezier(.2,.9,.25,1)}
+.citem.dragging{z-index:3;background:#fff;border-radius:12px;box-shadow:0 10px 24px -10px rgba(58,9,16,.4);transition:none}
+.citem.dragging .grip{color:var(--red)}
+@media (prefers-reduced-motion:reduce){.citem.shifting{transition:none}}
+
+/* datas importantes: progresso e ajuda do compromisso */
+.stepno{font-size:13px;font-weight:700;letter-spacing:.06em;color:var(--ink-3);margin:20px 0 8px;text-transform:uppercase}
+.dbar{display:flex;gap:6px}
+.dbar i{flex:1;height:4px;border-radius:4px;background:var(--rose)}
+.dbar i.on{background:var(--red)}
+.help-row{font-size:12.5px;color:var(--ink-2);margin:0 2px 14px}
