@@ -60,7 +60,7 @@ const IC = {
   pin: '<path d="M9 4h6l-1 6 3 3v2H7v-2l3-3Z"/><path d="M12 15v6"/>', lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
   note: '<path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/>', check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
   x: '<path d="M6 6l12 12M18 6 6 18"/>', copy: '<rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
-  grip: '<path d="M5 9h14M5 15h14"/>',
+  grip: '<path d="M5 9h14M5 15h14"/>', repeat: '<path d="m17 2 4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15"/><path d="m7 22-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/>',
   edit: '<path d="M12 20h8"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>', pinfill: '<path d="M9 4h6l-1 6 3 3v2H7v-2l3-3Z" fill="currentColor"/><path d="M12 15v6"/>'
 };
 function ic(name, size = 22, sw = 2) {
@@ -533,10 +533,15 @@ function tile(m, extra = "") {
   return `<button class="tile" data-media="${m.id}" aria-label="${m.kind === "video" ? "Vídeo" : "Foto"}${m.caption ? ": " + esc(m.caption) : ""}" ${extra}>${media}</button>`;
 }
 
+const SPOTIFY_RE = /^https:\/\/(open\.spotify\.com|spotify\.link)\/\S*$/;
 function aboutHTML() {
   const c = S.couple;
   if (c.about_mode === "musica") {
-    if (c.song_title) return `<div class="about"><div class="song-line"><span class="note">${ic("note", 18, 1.9)}</span><div style="min-width:0"><div class="lbl">A música do casal</div><div class="tt">${esc(c.song_title)}${c.song_artist ? ` <span>· ${esc(c.song_artist)}</span>` : ""}</div></div></div></div>`;
+    if (c.song_title) {
+      /* abre o link do Spotify do casal; sem link, busca pelo título e artista */
+      const url = c.song_url && SPOTIFY_RE.test(c.song_url) ? c.song_url : "https://open.spotify.com/search/" + encodeURIComponent((c.song_title + " " + (c.song_artist || "")).trim());
+      return `<div class="about"><a class="song-line" href="${esc(url)}" target="_blank" rel="noopener noreferrer" aria-label="Ouvir ${esc(c.song_title)} no Spotify"><span class="note">${ic("note", 18, 1.9)}</span><div style="min-width:0"><div class="lbl">A música do casal</div><div class="tt">${esc(c.song_title)}${c.song_artist ? ` <span>· ${esc(c.song_artist)}</span>` : ""}</div><div class="go">Ouvir no Spotify ›</div></div></a></div>`;
+    }
     return `<div class="addlink"><button class="link" data-act="editar">Adicionar a música do casal</button></div>`;
   }
   if (c.about_mode === "frase") {
@@ -760,19 +765,68 @@ function occIn(e, y) {
   const d = sm === 2 && sd === 29 && !isLeap(y) ? 28 : sd;
   return `${y}-${pad(sm)}-${pad(d)}`;
 }
-const occ = (e, on) => e.repeats_yearly ? Object.assign({}, e, { starts_on: on, ends_on: null }) : e;
-const evsOn = ds => S.events.filter(e => evVisible(e) && (e.repeats_yearly ? occIn(e, +ds.slice(0, 4)) === ds : e.starts_on <= ds && evEnd(e) >= ds));
-/* próximos compromissos depois de um dia (os anuais entram com a próxima data em que caem) */
+/* ---- repetição: cada compromisso tem uma regra (a antiga "todo ano" dos automáticos conta como 'yearly') ---- */
+const repRule = e => e.repeat_rule || (e.repeats_yearly ? "yearly" : null);
+const addDaysS = (s, n) => { const d = parseYmd(s); d.setDate(d.getDate() + n); return ymd(d); };
+const evDur = e => e.ends_on ? Math.max(0, dayDiff(parseYmd(e.ends_on), parseYmd(e.starts_on))) : 0;
+/* uma ocorrência COMEÇA neste dia? (mesma conta do banco: mês curto cai no último dia; 29/02 vira 28/02) */
+function repOccursOn(e, ds) {
+  const rule = repRule(e), s0 = e.starts_on.slice(0, 10);
+  if (!rule) return ds === s0;
+  if (ds < s0 || (e.repeat_until && ds > e.repeat_until)) return false;
+  const d = parseYmd(ds), sd = parseYmd(s0), dow = d.getDay();
+  if (rule === "daily") return true;
+  if (rule === "yearly") return occIn(e, d.getFullYear()) === ds;
+  if (rule === "monthly") return d.getDate() === Math.min(sd.getDate(), new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate());
+  const days = e.repeat_days || [];
+  if (!days.includes(dow)) return false;
+  return rule === "weekly" || Math.round((dayDiff(d, sd) - dow + sd.getDay()) / 7) % 2 === 0;
+}
+/* começo da ocorrência que cobre este dia (considera a duração de compromissos de vários dias), ou null */
+function occCover(e, ds) {
+  if (!repRule(e)) return e.starts_on <= ds && evEnd(e) >= ds ? e.starts_on : null;
+  const dur = Math.min(evDur(e), 366);
+  for (let k = 0; k <= dur; k++) { const s1 = k ? addDaysS(ds, -k) : ds; if (repOccursOn(e, s1)) return s1; }
+  return null;
+}
+/* primeira ocorrência que começa DEPOIS deste dia, ou null (série terminou) */
+function nextOccStart(e, after) {
+  if (!repRule(e)) return e.starts_on > after ? e.starts_on : null;
+  if (repRule(e) === "yearly") {
+    let on = occIn(e, Math.max(+after.slice(0, 4), +e.starts_on.slice(0, 4)));
+    if (on <= after) on = occIn(e, +on.slice(0, 4) + 1);
+    return e.repeat_until && on > e.repeat_until ? null : on;
+  }
+  for (let i = 1; i <= 400; i++) {
+    const s1 = addDaysS(after, i);
+    if (e.repeat_until && s1 > e.repeat_until) return null;
+    if (repOccursOn(e, s1)) return s1;
+  }
+  return null;
+}
+/* o compromisso como aparece numa ocorrência (começo e fim daquela vez) */
+const occ = (e, on) => repRule(e) ? Object.assign({}, e, { _serie: e._serie || e.starts_on, starts_on: on, ends_on: evDur(e) ? addDaysS(on, evDur(e)) : null }) : e;
+const evsOn = ds => S.events.filter(e => evVisible(e) && occCover(e, ds));
+/* próximos compromissos depois de um dia (os que repetem entram com a próxima data em que caem) */
 function upcoming(after, n) {
-  const y0 = +after.slice(0, 4), out = [];
-  S.events.filter(evVisible).forEach(e => {
-    if (e.repeats_yearly) {
-      let on = occIn(e, Math.max(y0, +e.starts_on.slice(0, 4)));
-      if (on <= after) on = occIn(e, +on.slice(0, 4) + 1);
-      out.push(occ(e, on));
-    } else if (e.starts_on > after) out.push(e);
-  });
+  const out = [];
+  S.events.filter(evVisible).forEach(e => { const on = nextOccStart(e, after); if (on) out.push(occ(e, on)); });
   return out.sort(sortEv).slice(0, n);
+}
+/* resumo da regra: "Todo sábado", "Seg e qua, a cada 2 semanas", "Todo mês, dia 5", "Todo dia, até 30/03/2027" */
+const SEM3 = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
+function repSummary(e) {
+  const rule = e.repeat_rule; if (!rule) return "";
+  const dias = [...(e.repeat_days || [])].sort((a, b) => a - b);
+  const lista = a => { const t = a.map(i => SEM3[i]); const j = t.length > 1 ? t.slice(0, -1).join(", ") + " e " + t[t.length - 1] : t[0] || ""; return j.charAt(0).toUpperCase() + j.slice(1); };
+  let t = "";
+  if (rule === "daily") t = "Todo dia";
+  else if (rule === "weekly") t = dias.length === 1 ? `${[0, 6].includes(dias[0]) ? "Todo" : "Toda"} ${SEM[dias[0]]}` : `${lista(dias)}, toda semana`;
+  else if (rule === "biweekly") t = `${lista(dias)}, a cada 2 semanas`;
+  else if (rule === "monthly") t = `Todo mês, dia ${parseYmd(e._serie || e.starts_on).getDate()}`;
+  else if (rule === "yearly") t = "Todo ano";
+  if (e.repeat_until) { const [y, m, d] = e.repeat_until.slice(0, 10).split("-"); t += `, até ${d}/${m}/${y}`; }
+  return t;
 }
 function rangeShort(a, b) {
   const da = parseYmd(a), db = parseYmd(b), yr = db.getFullYear() !== todayDate().getFullYear() ? " " + db.getFullYear() : "";
@@ -790,19 +844,19 @@ function calHTML() {
     cells += `<button class="dcell ${ds === todayS ? "today" : ""} ${ds === UI.selDay ? "sel" : ""}" data-day="${ds}" aria-pressed="${ds === UI.selDay}" aria-label="${d} de ${MESL[mo]}${evs.length ? `, ${plural(evs.length, "compromisso", "compromissos")}` : ""}"><span class="n">${d}</span><span class="ds">${cores.map(c => `<i style="--c:${c}"></i>`).join("")}</span></button>`;
   }
   const sel = parseYmd(UI.selDay);
-  const dayEvs = evsOn(UI.selDay).map(e => occ(e, UI.selDay)).sort(sortEv);
+  const dayEvs = evsOn(UI.selDay).map(e => occ(e, occCover(e, UI.selDay))).sort(sortEv);
   const later = upcoming(UI.selDay, 4);
   const evRow = (e, withDate) => {
     const multi = evEnd(e) > e.starts_on, d = parseYmd(e.starts_on), cal = calOf(e), tempo = evTime(e), auto = !!e.auto_key;
     let quando = "";
     if (withDate) quando = multi ? rangeShort(e.starts_on, e.ends_on) : `${SEM[d.getDay()]}, ${d.getDate()} ${MES[d.getMonth()]}${d.getFullYear() !== todayDate().getFullYear() ? " " + d.getFullYear() : ""}`;
     else if (multi) quando = `Dia ${dayDiff(parseYmd(UI.selDay), d) + 1} de ${dayDiff(parseYmd(e.ends_on), d) + 1} · ${rangeShort(e.starts_on, e.ends_on)}`;
-    const sub = [quando, cal ? cal.name : "", auto ? "" : whoName(e.who_user)].filter(Boolean).map(esc).join(" · ");
+    const sub = [quando, cal ? cal.name : "", e.repeat_rule ? repSummary(e) : "", auto ? "" : whoName(e.who_user)].filter(Boolean).map(esc).join(" · ");
     const tm = withDate ? tempo : (multi && UI.selDay !== e.starts_on ? "" : (tempo || "dia todo"));
-    return `<div class="evt" style="--c:${evColor(e)}"><span class="bar"></span><button class="evbody" data-ev="${e.id}" aria-label="${auto ? "Data do perfil" : "Editar compromisso"}: ${esc(e.title)}"><b>${esc(e.title)}</b><span>${sub}</span>${e.note ? `<span class="note-ev">${esc(e.note)}</span>` : ""}</button><div class="tm">${esc(tm)}</div>${auto ? "" : `<button class="del" data-delev="${e.id}" aria-label="Apagar compromisso: ${esc(e.title)}">${ic("trash", 18, 1.9)}</button>`}</div>`;
+    return `<div class="evt" style="--c:${evColor(e)}"><span class="bar"></span><button class="evbody" data-ev="${e.id}" aria-label="${auto ? "Data do perfil" : "Editar compromisso"}: ${esc(e.title)}"><b>${esc(e.title)}${e.repeat_rule ? `<span class="rep" role="img" aria-label="Repete">${ic("repeat", 13, 2.2)}</span>` : ""}</b><span>${sub}</span>${e.note ? `<span class="note-ev">${esc(e.note)}</span>` : ""}</button><div class="tm">${esc(tm)}</div>${auto ? "" : `<button class="del" data-delev="${e.id}" aria-label="Apagar compromisso: ${esc(e.title)}">${ic("trash", 18, 1.9)}</button>`}</div>`;
   };
   /* contagem regressiva: só dos compromissos marcados com essa opção, do mais perto ao mais longe */
-  const card = S.events.filter(e => e.countdown && evVisible(e) && e.starts_on > todayS).sort(sortEv).map(next => {
+  const card = S.events.filter(e => e.countdown && evVisible(e)).map(e => { const on = nextOccStart(e, todayS); return on ? occ(e, on) : null; }).filter(Boolean).sort(sortEv).map(next => {
     const n = dayDiff(parseYmd(next.starts_on), todayDate()), multi = evEnd(next) > next.starts_on;
     return `<div class="count-card"><div><div class="t">${esc(next.title)}</div><span>${esc(multi ? rangeShort(next.starts_on, next.ends_on) : fmtLong(next.starts_on))}${evTime(next) ? " · " + esc(evTime(next)) : ""}</span></div><div style="text-align:right"><b>${fmtN(n)}</b><span style="display:block">${n === 1 ? "dia" : "dias"}</span></div></div>`;
   }).join("");
@@ -979,7 +1033,7 @@ function openPicker(o) {
 /* ============ ações: perfil ============ */
 function openProfile() {
   const c = S.couple, mm = me();
-  const m = { push: "checking", about: c.about_mode, song_title: c.song_title || "", song_artist: c.song_artist || "", phrase: c.phrase || "", nome: mm.display_name || "", start: c.start_date || "", birthday: mm.birthday || "", met: c.met_on || "", kiss: c.first_kiss_on || "",
+  const m = { push: "checking", about: c.about_mode, song_title: c.song_title || "", song_artist: c.song_artist || "", song_url: c.song_url || "", phrase: c.phrase || "", nome: mm.display_name || "", start: c.start_date || "", birthday: mm.birthday || "", met: c.met_on || "", kiss: c.first_kiss_on || "",
     stage: c.stage || "", engaged: c.engaged_on || "", married: c.married_on || "",
     rows: S.dates.map(d => ({ id: d.id, title: d.title, date: d.date, kind: d.kind })),
     orig: { birthday: mm.birthday || "", met: c.met_on || "", kiss: c.first_kiss_on || "", start: c.start_date || "", stage: c.stage || "", engaged: c.engaged_on || "", married: c.married_on || "" }, err: "" };
@@ -1000,7 +1054,7 @@ function openProfile() {
         ${[["musica", "Música do casal", "O nome da música aparece no perfil"], ["frase", "Uma frase", "Um verso, uma promessa, uma piada interna"], ["branco", "Deixar em branco", "Só as fotos"]].map(([k, t, d]) => `<button type="button" class="opt" role="radio" data-s="about" data-v="${k}" aria-checked="${m.about === k}"><span class="radio"></span><span><b>${t}</b><span class="d">${d}</span></span></button>`).join("")}
       </div>
       <form id="pform" novalidate style="margin-top:8px">
-      ${m.about === "musica" ? `<label class="field"><span>Título da música</span><input data-m="song_title" maxlength="120" value="${esc(m.song_title)}" autocomplete="off"></label><label class="field"><span>Artista</span><input data-m="song_artist" maxlength="120" value="${esc(m.song_artist)}" autocomplete="off"></label>` : ""}
+      ${m.about === "musica" ? `<label class="field"><span>Título da música</span><input data-m="song_title" maxlength="120" value="${esc(m.song_title)}" autocomplete="off"></label><label class="field"><span>Artista</span><input data-m="song_artist" maxlength="120" value="${esc(m.song_artist)}" autocomplete="off"></label><label class="field"><span>Link do Spotify (opcional)</span><input type="url" inputmode="url" data-m="song_url" maxlength="500" value="${esc(m.song_url)}" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://open.spotify.com/..."><span class="help">No Spotify: Compartilhar → Copiar link</span></label>` : ""}
       ${m.about === "frase" ? `<label class="field"><span>A frase de vocês</span><textarea data-m="phrase" maxlength="200" rows="2">${esc(m.phrase)}</textarea></label>` : ""}
       <label class="field"><span>Seu nome</span><input data-m="nome" maxlength="60" value="${esc(m.nome)}" autocomplete="given-name"></label>
       <label class="field"><span>Seu aniversário</span><input type="date" data-m="birthday" min="1900-01-01" max="${ymd(todayDate())}" value="${esc(m.birthday)}"><span class="help">Só ${esc(partnerName())} vê esse lembrete, um dia antes.</span></label>
@@ -1024,7 +1078,9 @@ function openProfile() {
         const rows = m.rows.map(r => ({ id: r.id, kind: r.kind, title: r.title.trim(), date: r.date })).filter(r => r.id || r.title || r.date);
         if (rows.some(r => !r.title || !r.date)) { m.err = "Preencha o nome e o dia de cada data, ou toque em Remover."; drawSheet(); return; }
         if (rows.some(r => r.date < "1900-01-01" || r.date > "2100-01-01")) { m.err = "Alguma data não vale. Confira o dia, o mês e o ano."; drawSheet(); return; }
-        const patch = { about_mode: m.about, song_title: m.song_title.trim() || null, song_artist: m.song_artist.trim() || null, phrase: m.phrase.trim() || null };
+        const songUrl = m.song_url.trim();
+        if (songUrl && !SPOTIFY_RE.test(songUrl)) { m.err = "Esse link não é do Spotify. No Spotify, toque em Compartilhar → Copiar link e cole aqui."; drawSheet(); return; }
+        const patch = { about_mode: m.about, song_title: m.song_title.trim() || null, song_artist: m.song_artist.trim() || null, song_url: songUrl || null, phrase: m.phrase.trim() || null };
         const [c2, m2] = await Promise.all([
           q(sb.from("couples").update(patch).eq("id", S.couple.id).select().single()),
           q(sb.from("couple_members").update({ display_name: nome }).eq("user_id", S.user.id).select().single())
@@ -1560,12 +1616,16 @@ const ALERTAS = [["", "Nenhum"], ["0", "Na hora"], ["5", "5 min antes"], ["15", 
 const ALERTAS_DIA = [["", "Nenhum"], ["0", "No dia (9h)"], ["1440", "1 dia antes (9h)"], ["2880", "2 dias antes (9h)"], ["10080", "1 semana antes (9h)"]];
 function proximaCor() { const usadas = new Set(S.calendars.map(c => c.color.toLowerCase())); return (PALETA.find(p => !usadas.has(p[0])) || PALETA[S.calendars.length % PALETA.length])[0]; }
 
+const REPETIR = [["", "Não repete"], ["daily", "Todo dia"], ["weekly", "Toda semana"], ["biweekly", "A cada 2 semanas"], ["monthly", "Todo mês"], ["yearly", "Todo ano"]];
 function openEventForm(ev) {
   const m = {
     title: ev ? ev.title : "", cal: ev && ev.calendar_id && calOf(ev) ? ev.calendar_id : "", allday: ev ? !evTime(ev) : true,
     date: ev ? ev.starts_on : UI.selDay, time: ev ? evTime(ev) : "", end: ev && ev.ends_on ? ev.ends_on : "", who: ev && ev.who_user ? ev.who_user : "",
-    alert: ev && ev.alert_minutes != null ? String(ev.alert_minutes) : "", note: ev && ev.note ? ev.note : "", countdown: !!(ev && ev.countdown), err: ""
+    alert: ev && ev.alert_minutes != null ? String(ev.alert_minutes) : "", note: ev && ev.note ? ev.note : "", countdown: !!(ev && ev.countdown), err: "",
+    rule: ev && ev.repeat_rule ? ev.repeat_rule : "", days: ev && ev.repeat_days ? [...ev.repeat_days] : [], daysTouched: !!(ev && ev.repeat_days), until: ev && ev.repeat_until ? ev.repeat_until : ""
   };
+  /* dias da semana: enquanto a pessoa não mexe nos chips, acompanham o dia da data escolhida */
+  const syncDays = () => { if (!m.daysTouched && m.date) m.days = [parseYmd(m.date).getDay()]; };
   const cals = [["", "Do casal", CASAL_COR], ...S.calendars.map(c => [c.id, c.name, c.color])];
   openSheet({
     model: m, focus: !ev,
@@ -1580,6 +1640,11 @@ function openEventForm(ev) {
         ${m.allday ? "" : `<label class="field"><span>Horário</span><input type="time" data-m="time" value="${esc(m.time)}"></label>`}
       </div>
       <label class="field"><span>Termina (opcional)</span><input type="date" data-m="end" value="${esc(m.end)}" min="${esc(m.date)}"><span class="help">Para compromissos de vários dias, como uma viagem.</span></label>
+      <div class="field"><span>Repetir</span><div class="chips" role="group" aria-label="Repetir">
+        ${REPETIR.map(([v, t]) => `<button type="button" data-s="rep" data-v="${v}" aria-pressed="${m.rule === v}">${t}</button>`).join("")}</div>
+        ${m.rule === "weekly" || m.rule === "biweekly" ? `<div class="chips days" role="group" aria-label="Dias da semana">${["D", "S", "T", "Q", "Q", "S", "S"].map((l, i) => `<button type="button" data-s="day" data-v="${i}" aria-label="${SEM[i]}" aria-pressed="${m.days.includes(i)}">${l}</button>`).join("")}</div>` : ""}
+        ${m.rule ? `<p class="help-row" style="margin-top:-6px">${esc(repSummary({ repeat_rule: m.rule, repeat_days: m.days, repeat_until: m.until, starts_on: m.date || UI.selDay }))}. ${evDur({ starts_on: m.date, ends_on: m.end }) ? "Cada vez dura o mesmo número de dias." : ""}</p>` : ""}</div>
+      ${m.rule ? `<label class="field"><span>Até quando (opcional)</span><input type="date" data-m="until" min="${esc(m.date)}" value="${esc(m.until)}"><span class="help">Sem data, repete para sempre.${ev ? " Mudar aqui vale para todas as repetições." : ""}</span></label>` : ""}
       <div class="field"><span>Quem vai</span><div class="chips" role="group" aria-label="Quem vai">
         <button type="button" data-s="who" data-v="" aria-pressed="${m.who === ""}">Os dois</button>
         ${S.members.map(x => `<button type="button" data-s="who" data-v="${x.user_id}" aria-pressed="${m.who === x.user_id}">${esc(x.display_name || "Alguém")}</button>`).join("")}</div></div>
@@ -1593,6 +1658,12 @@ function openEventForm(ev) {
       cal: t => { m.cal = t.dataset.v; drawSheet(); },
       allday: () => { m.allday = !m.allday; if (m.allday && !ALERTAS_DIA.some(a => a[0] === m.alert)) m.alert = ""; drawSheet(); },
       who: t => { m.who = t.dataset.v; drawSheet(); },
+      rep: t => { m.rule = t.dataset.v; if (!m.rule) m.until = ""; syncDays(); drawSheet(); },
+      day: t => {
+        const i = +t.dataset.v, on = m.days.includes(i);
+        if (on && m.days.length === 1) return toast("Escolha pelo menos um dia da semana.");
+        m.daysTouched = true; m.days = on ? m.days.filter(x => x !== i) : [...m.days, i].sort((a, b) => a - b); drawSheet();
+      },
       countdown: () => { m.countdown = !m.countdown; drawSheet(); },
       apagar: () => deleteEvent(ev.id),
       submit: async () => {
@@ -1600,8 +1671,19 @@ function openEventForm(ev) {
         if (!m.date) { m.err = "Escolha o dia em que começa."; drawSheet(); return; }
         if (!m.allday && !m.time) { m.err = "Escolha o horário ou ligue Dia inteiro."; drawSheet(); return; }
         if (m.end && m.end < m.date) { m.err = "O fim precisa ser no mesmo dia do começo ou depois."; drawSheet(); return; }
+        if (m.until && m.until < m.date) { m.err = "A data final precisa ser no dia do começo ou depois."; drawSheet(); return; }
+        let start = m.date, fim = m.end && m.end > m.date ? m.end : null;
+        const semanal = m.rule === "weekly" || m.rule === "biweekly";
+        if (semanal) {
+          syncDays();
+          /* o compromisso começa no primeiro dia marcado a partir da data escolhida (a duração é mantida) */
+          let k = 0; while (!m.days.includes(parseYmd(addDaysS(start, k)).getDay()) && k < 7) k++;
+          if (k) { if (fim) fim = addDaysS(fim, k); start = addDaysS(start, k); }
+          if (m.until && m.until < start) { m.err = "A data final vem antes do primeiro dia da repetição. Escolha uma data depois."; drawSheet(); return; }
+        }
         const row = {
-          title: m.title.trim(), starts_on: m.date, ends_on: m.end && m.end > m.date ? m.end : null,
+          title: m.title.trim(), starts_on: start, ends_on: fim,
+          repeat_rule: m.rule || null, repeat_days: semanal ? [...m.days].sort((a, b) => a - b) : null, repeat_until: m.rule && m.until ? m.until : null,
           start_time: m.allday ? null : m.time, time_label: m.allday ? null : m.time,
           calendar_id: m.cal || null, who_user: m.who || null, alert_minutes: m.alert === "" ? null : +m.alert, note: m.note.trim() || null, countdown: !!m.countdown
         };
@@ -1615,7 +1697,7 @@ function openEventForm(ev) {
         }
         S.events.sort(sortEv);
         if (HID.has(m.cal || "casal")) { HID.delete(m.cal || "casal"); saveHid(); }
-        const d = parseYmd(m.date); UI.calY = d.getFullYear(); UI.calM = d.getMonth(); UI.selDay = m.date;
+        const d = parseYmd(start); UI.calY = d.getFullYear(); UI.calM = d.getMonth(); UI.selDay = start;
         closeSheet(); render(true); toast(ev ? "Compromisso atualizado." : "Compromisso salvo.");
         if (row.alert_minutes != null) offerPush();
       }
@@ -1624,7 +1706,7 @@ function openEventForm(ev) {
 }
 function deleteEvent(id) {
   const e = S.events.find(x => x.id === id); if (!e) return;
-  askConfirm(`Apagar "${e.title}"?`, "O compromisso some para os dois.", "Apagar", async () => {
+  askConfirm(`Apagar "${e.title}"?`, e.repeat_rule ? "Apaga a série inteira, com todas as repetições, para os dois." : "O compromisso some para os dois.", e.repeat_rule ? "Apagar a série" : "Apagar", async () => {
     await q(sb.from("events").delete().eq("id", id));
     S.events = S.events.filter(x => x.id !== id); closeSheet(); render(true); toast("Compromisso apagado.");
   });
@@ -1643,7 +1725,7 @@ function openCalendarios() {
       return `<h3>Calendários</h3><p class="hint">Toque para mostrar ou ocultar na agenda.</p>
       <div class="calrows">${rows.map(([id, nm, cor, ed]) => `<div class="calrow"><button type="button" class="calmain" role="switch" aria-checked="${!HID.has(id)}" data-s="vis" data-id="${esc(id)}"><span class="vis" style="--c:${cor}">${ic("check", 14, 3.4)}</span><span class="nm">${esc(nm)}</span></button>${ed ? `<button type="button" class="caledit" data-s="editcal" data-id="${esc(id)}" aria-label="Editar o calendário ${esc(nm)}">${ic("edit", 18, 1.9)}</button>` : ""}</div>`).join("")}</div>
       <div class="btns" style="margin:0 0 14px"><button class="btn ghost" data-s="todos">Mostrar todos</button><button class="btn ghost" data-s="nenhum">Ocultar todos</button></div>
-      ${S.calendars.length ? "" : `<p class="hint">Que tal começar por um destes?</p><div class="chips">${SUG_CALS.map(n => `<button type="button" data-s="sug" data-v="${esc(n)}">${esc(n)}</button>`).join("")}</div>`}
+      ${S.calendars.some(c => !c.auto_key) ? "" : `<p class="hint">Que tal começar por um destes?</p><div class="chips">${SUG_CALS.map(n => `<button type="button" data-s="sug" data-v="${esc(n)}">${esc(n)}</button>`).join("")}</div>`}
       <button class="btn" data-s="novo">Novo calendário</button>`;
     },
     on: {
@@ -1658,15 +1740,16 @@ function openCalendarios() {
   openSheet(def);
 }
 function openCalForm(cal) {
+  const auto = !!(cal && cal.auto_key);   /* calendário automático (Aniversários): só a cor muda */
   const m = { name: cal ? cal.name : "", color: cal ? cal.color : proximaCor(), err: "" };
   openSheet({
     model: m, focus: !cal,
     view: () => `<h3>${cal ? "Editar calendário" : "Novo calendário"}</h3>${m.err ? hint(m.err) : ""}
       <form novalidate>
-      <label class="field"><span>Nome</span><input data-m="name" maxlength="40" value="${esc(m.name)}" autocomplete="off" placeholder="Ex.: Médicos"></label>
+      ${auto ? `<p class="hint">${esc(cal.name)} é criado pelo Us, com as datas de vocês. Aqui dá para trocar só a cor.</p>` : `<label class="field"><span>Nome</span><input data-m="name" maxlength="40" value="${esc(m.name)}" autocomplete="off" placeholder="Ex.: Médicos"></label>`}
       <div class="field"><span>Cor</span><div class="swatches" role="radiogroup" aria-label="Cor do calendário">${PALETA.map(([hex, nm]) => `<button type="button" class="swatch" role="radio" aria-label="${nm}" aria-checked="${m.color.toLowerCase() === hex}" data-s="cor" data-v="${hex}" style="--c:${hex}">${ic("check", 16, 3.2)}</button>`).join("")}</div></div>
       <button class="btn" type="submit">${cal ? "Salvar" : "Criar calendário"}</button>
-      ${cal ? `<button type="button" class="btn warn" data-s="apagar">Apagar calendário</button>` : ""}
+      ${cal && !auto ? `<button type="button" class="btn warn" data-s="apagar">Apagar calendário</button>` : ""}
       <button type="button" class="btn ghost" data-s="voltar">Voltar</button></form>`,
     on: {
       cor: t => { m.color = t.dataset.v; drawSheet(); },
@@ -1679,8 +1762,8 @@ function openCalForm(cal) {
       }),
       submit: async () => {
         const name = m.name.trim();
-        if (!name) { m.err = "Dê um nome para o calendário."; drawSheet(); return; }
-        if (cal) { const r = await q(sb.from("calendars").update({ name, color: m.color }).eq("id", cal.id).select().single()); Object.assign(cal, r); }
+        if (!name && !auto) { m.err = "Dê um nome para o calendário."; drawSheet(); return; }
+        if (cal) { const r = await q(sb.from("calendars").update(auto ? { color: m.color } : { name, color: m.color }).eq("id", cal.id).select().single()); Object.assign(cal, r); }
         else await criarCalendario(name, m.color);
         render(true); sheetBack(); toast(cal ? "Calendário salvo." : "Calendário criado.");
       }
