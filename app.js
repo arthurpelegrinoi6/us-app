@@ -2048,7 +2048,22 @@ async function init() {
   if (hashErr) { const { data } = await sb.auth.getSession(); if (!data.session) { showAuth(hashErr); return; } }
   await boot();
 }
-if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => { }));
+if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).catch(() => { }));
+  /* versão nova publicada: confere sempre que o app volta para a tela e recarrega sozinho quando é seguro
+     (nunca no meio de um formulário aberto ou enquanto a pessoa digita) */
+  const tinhaVersao = !!navigator.serviceWorker.controller;
+  let recarregarDepois = false;
+  const seguro = () => !SH && !(document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName));
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!tinhaVersao) return; // primeira vez neste aparelho: a página já é a versão nova
+    if (document.hidden || seguro()) location.reload(); else recarregarDepois = true;
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) { if (recarregarDepois) location.reload(); return; }
+    navigator.serviceWorker.getRegistration().then(r => r && r.update()).catch(() => { });
+  });
+}
 if ("serviceWorker" in navigator) navigator.serviceWorker.addEventListener("message", e => {
   if (e.data && e.data.tipo === "abrir-calendario" && S.couple) { closePanel(); closeViewer(); closeSheet(); UI.tab = "cal"; render(); }
 });
