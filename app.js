@@ -69,11 +69,11 @@ function ic(name, size = 22, sw = 2) {
 const PLAY = '<svg width="18" height="18" viewBox="0 0 24 24" fill="#fff" aria-hidden="true"><path d="M7 4.5v15l12.5-7.5Z"/></svg>';
 
 /* ============ estado ============ */
-const S = { user: null, members: [], couple: null, media: [], trips: [], lists: [], items: [], events: [], calendars: [], dates: [], sections: [], loaded: false, lastLoad: 0 };
+const S = { user: null, members: [], couple: null, media: [], passeio: [], dayTitles: [], trips: [], lists: [], items: [], events: [], calendars: [], dates: [], sections: [], loaded: false, lastLoad: 0 };
 const t0 = todayDate();
 const UI = {
   tab: "feed", seg: "datas", openList: null, panel: null, viewer: null,
-  calY: t0.getFullYear(), calM: t0.getMonth(), selDay: ymd(t0),
+  sel: null, calY: t0.getFullYear(), calM: t0.getMonth(), selDay: ymd(t0),
   authTab: "entrar", authEmail: "", recovery: false, onbMode: "criar"
 };
 const view = $("view"), panel = $("panel"), viewer = $("viewer"), gate = $("gate"), app = $("app");
@@ -150,7 +150,7 @@ async function loadData() {
   S.members = sortMembers(mem);
   if (!me()) { S.couple = null; return false; }
   const coupleId = me().couple_id;
-  const [couple, media, trips, lists, items, events, cals, dts, secs] = await Promise.all([
+  const [couple, media, trips, lists, items, events, cals, dts, secs, dtit] = await Promise.all([
     q(sb.from("couples").select("*").eq("id", coupleId).single()),
     fetchAll("media", b => b.order("taken_at", { ascending: false }).order("created_at", { ascending: false }).order("id")),
     q(sb.from("trips").select("*").order("created_at", { ascending: false })),
@@ -159,10 +159,12 @@ async function loadData() {
     q(sb.from("events").select("*").order("starts_on", { ascending: true })),
     sb.from("calendars").select("*").order("created_at", { ascending: true }).then(r => r.error ? [] : r.data, () => []),
     sb.from("couple_dates").select("*").order("created_at", { ascending: true }).then(r => r.error ? [] : r.data, () => []),
-    sb.from("list_sections").select("*").order("position", { ascending: true }).then(r => r.error ? [] : r.data, () => [])
+    sb.from("list_sections").select("*").order("position", { ascending: true }).then(r => r.error ? [] : r.data, () => []),
+    sb.from("media_day_titles").select("*").then(r => r.error ? [] : r.data, () => [])
   ]);
   S.dates = dts; S.sections = secs;
-  S.couple = couple; S.media = media; S.trips = trips; S.lists = lists; S.items = items; S.events = events; S.calendars = cals;
+  S.dayTitles = dtit;
+  S.couple = couple; S.media = media.filter(m => !m.expires_at); S.passeio = media.filter(m => m.expires_at); S.trips = trips; S.lists = lists; S.items = items; S.events = events; S.calendars = cals;
   S.loaded = true; S.lastLoad = Date.now();
   return true;
 }
@@ -482,7 +484,7 @@ async function signOut() {
   resetState(); UI.authTab = "entrar"; showAuth();
 }
 function resetState() {
-  Object.assign(S, { user: null, members: [], couple: null, media: [], trips: [], lists: [], items: [], events: [], calendars: [], dates: [], sections: [], loaded: false });
+  Object.assign(S, { user: null, members: [], couple: null, media: [], passeio: [], dayTitles: [], trips: [], lists: [], items: [], events: [], calendars: [], dates: [], sections: [], loaded: false });
   Object.assign(UI, { tab: "feed", openList: null, panel: null, viewer: null, dflow: null });
   urlCache.clear(); closePanel(true); closeViewer(true); closeSheet();
 }
@@ -508,6 +510,7 @@ function enterApp() {
   gate.hidden = true; app.hidden = false;
   document.querySelectorAll(".tab").forEach(t => t.dataset.tab === UI.tab ? t.setAttribute("aria-current", "page") : t.removeAttribute("aria-current"));
   render();
+  if (UI.abrirPasseio) { UI.abrirPasseio = false; openPanel("passeio"); }
 }
 
 /* ============ telas ============ */
@@ -529,7 +532,7 @@ function avatar(m, cls = "av") {
 function tile(m, extra = "") {
   const media = m.kind === "video"
     ? `<video data-path="${esc(m.path)}" data-thumb="1" preload="metadata" muted playsinline aria-hidden="true"></video><span class="vid">${PLAY}</span>`
-    : imgTag(m.path, m.caption || m.place || "Foto");
+    : imgTag(m.thumb_path || m.path, m.caption || m.place || "Foto");
   return `<button class="tile" data-media="${m.id}" aria-label="${m.kind === "video" ? "Vídeo" : "Foto"}${m.caption ? ": " + esc(m.caption) : ""}" ${extra}>${media}</button>`;
 }
 
@@ -612,6 +615,7 @@ function fotosHTML() {
     <span class="acts"><button data-act="subir" aria-label="Subir fotos e vídeos" style="display:flex;gap:6px;align-items:center;color:var(--red);font-weight:700;font-size:14.5px">${ic("upload", 20, 2.2)}Subir</button></span></div>
   <h1 class="big-title">Fotos e vídeos</h1>
   <p class="sub-title">${plural(total, "item", "itens")} dos dois · ${plural(vids, "vídeo", "vídeos")}</p>
+  ${passeioCardHTML()}
   <div class="seg" role="group" aria-label="Organizar por">
     <button data-seg="datas" aria-pressed="${UI.seg === "datas"}">Datas</button>
     <button data-seg="viagens" aria-pressed="${UI.seg === "viagens"}">Viagens</button>
@@ -623,6 +627,7 @@ function fotosHTML() {
 /* ---- painel (viagem e lugar) ---- */
 function renderPanel() {
   const p = UI.panel; if (!p) return;
+  if (p.type === "passeio") { renderPasseio(); return; }
   let title = "", sub = "", list = [], actions = "", empty = "";
   if (p.type === "trip") {
     const t = S.trips.find(x => x.id === p.id); if (!t) { closePanel(); return; }
@@ -641,12 +646,12 @@ function renderPanel() {
     <div style="height:30px"></div>`;
   hydrate();
 }
-function openPanel(type, idOrKey) { UI.panel = type === "trip" ? { type, id: idOrKey } : { type, key: idOrKey }; renderPanel(); panel.scrollTop = 0; panel.classList.add("on"); }
-function closePanel(quick) { UI.panel = null; panel.classList.remove("on"); if (quick) panel.innerHTML = ""; }
+function openPanel(type, idOrKey) { UI.panel = type === "trip" ? { type, id: idOrKey } : { type, key: idOrKey }; if (type === "passeio") UI.sel = null; renderPanel(); panel.scrollTop = 0; panel.classList.add("on"); }
+function closePanel(quick) { UI.panel = null; UI.sel = null; panel.classList.remove("on"); if (quick) panel.innerHTML = ""; }
 
 /* ---- visualizador (post) ---- */
 function renderViewer() {
-  const m = S.media.find(x => x.id === UI.viewer);
+  const m = findMedia(UI.viewer);
   if (!m) { closeViewer(); return; }
   const trip = m.trip_id ? S.trips.find(t => t.id === m.trip_id) : null;
   const minis = S.members.map(x => x.avatar_path ? `<span>${imgTag(x.avatar_path, "")}</span>` : `<span class="init" aria-hidden="true">${esc((x.display_name || "?").charAt(0).toUpperCase())}</span>`).join("");
@@ -659,11 +664,11 @@ function renderViewer() {
     <div class="vmedia">${mediaEl}</div>
     <div class="vact">
       <button class="pbtn ${m.in_feed ? "" : "red"}" data-act="v-feed">${m.in_feed ? "Tirar do feed" : "Pôr no feed"}</button>
-      <button class="pbtn" data-act="v-edit">Editar detalhes</button>
+      ${m.expires_at ? '<button class="pbtn" data-act="v-save">Salvar no celular</button>' : '<button class="pbtn" data-act="v-edit">Editar detalhes</button>'}
       <button class="pbtn dng" data-act="v-del">Apagar</button>
     </div>
     <div class="post-body">${m.caption ? `<b>${esc(coupleNames())}</b> ${esc(m.caption)}` : `<span style="color:var(--ink-2)">Sem legenda.</span>`}
-      <div class="date">${esc(fmtLong(m.taken_at))}${m.place ? ` · ${esc(m.place)}` : ""}${trip ? ` · ${esc(trip.name)}` : ""}${m.in_feed ? " · no feed" : ""}</div></div>`;
+      <div class="date">${esc(fmtLong(m.taken_at))}${m.place ? ` · ${esc(m.place)}` : ""}${trip ? ` · ${esc(trip.name)}` : ""}${m.in_feed ? " · no feed" : ""}${m.expires_at ? ` · some ${quando(diasRestantes(m))}` : ""}</div></div>`;
   hydrate();
 }
 function openViewer(id) { UI.viewer = id; renderViewer(); viewer.scrollTop = 0; viewer.classList.add("on"); }
@@ -1183,15 +1188,395 @@ function openEditMedia() {
   });
 }
 function deleteMedia() {
-  const x = S.media.find(v => v.id === UI.viewer); if (!x) return;
+  const x = findMedia(UI.viewer); if (!x) return;
   askConfirm(x.kind === "video" ? "Apagar este vídeo?" : "Apagar esta foto?", "Ela some para os dois e não dá para desfazer.", "Apagar", async () => {
     await q(sb.from("media").delete().eq("id", x.id));
-    sb.storage.from("media").remove([x.path]).catch(() => { });
+    sb.storage.from("media").remove([x.path, x.thumb_path].filter(Boolean)).catch(() => { });
     if (S.couple.cover_path === x.path) { S.couple = await q(sb.from("couples").update({ cover_path: null }).eq("id", S.couple.id).select().single()); }
-    S.media = S.media.filter(v => v.id !== x.id);
+    S.media = S.media.filter(v => v.id !== x.id); S.passeio = S.passeio.filter(v => v.id !== x.id);
     closeSheet(); closeViewer(); refreshViews(); toast("Apagado.");
   });
 }
+
+/* ============ fotos do passeio ============
+   Quem tirou manda em alta qualidade (até 3000 px), o outro salva tudo no celular, os dois escolhem as
+   preferidas (vão para o feed) e o resto some 30 dias depois do envio (o banco e a limpeza diária cuidam disso). */
+const PARALELO = 3, LOTE_SALVAR = 20, MAX_FULL = 3000, Q_FULL = 0.85, MAX_THUMB = 640, Q_THUMB = 0.8, PASSEIO_DIAS = 30;
+const findMedia = id => S.media.find(x => x.id === id) || S.passeio.find(x => x.id === id) || null;
+const cmpShot = (a, b) => String(a.shot_at || a.created_at).localeCompare(String(b.shot_at || b.created_at)) || a.id.localeCompare(b.id);
+/* põe a linha no lugar certo: com prazo = passeio; sem prazo (foi para o feed ou é antiga) = fotos de sempre */
+function placeRow(r) {
+  S.media = S.media.filter(x => x.id !== r.id); S.passeio = S.passeio.filter(x => x.id !== r.id);
+  (r.expires_at ? S.passeio : S.media).push(r);
+  S.media.sort((a, b) => b.taken_at.localeCompare(a.taken_at) || String(b.created_at).localeCompare(String(a.created_at)));
+}
+const diasRestantes = m => Math.max(0, Math.ceil((new Date(m.expires_at) - Date.now()) / 864e5));
+const quando = d => d <= 0 ? "hoje" : d === 1 ? "amanhã" : `em ${d} dias`;
+function dayLabel(day) {
+  const d = parseYmd(day), y = d.getFullYear() !== t0.getFullYear() ? " " + d.getFullYear() : "";
+  return `${cap1(SEM[d.getDay()])}, ${d.getDate()} ${MES[d.getMonth()]}${y}`;
+}
+const dayTitle = day => { const x = S.dayTitles.find(t => t.day === day); return x ? x.title : ""; };
+function passeioDias() {
+  const g = groupBy(S.passeio, m => m.taken_at);
+  return [...g.keys()].sort().reverse().map(day => ({ day, list: g.get(day).sort(cmpShot) }));
+}
+const isIos = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const canShareFiles = () => { try { return !!(navigator.canShare && navigator.share && navigator.canShare({ files: [new File([""], "a.jpg", { type: "image/jpeg" })] })); } catch (e) { return false; } };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const isNetErr = e => isNet(e) || navigator.onLine === false;
+
+/* ---- EXIF: lê a data em que a foto foi tirada (DateTimeOriginal) e grava de volta na foto reduzida ---- */
+function exifDateFromString(s) {
+  const m = /^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(s || "");
+  if (!m || +m[1] < 1990 || +m[2] < 1 || +m[2] > 12 || +m[3] < 1 || +m[3] > 31) return null;
+  return { date: `${m[1]}-${m[2]}-${m[3]}`, time: `${m[4]}:${m[5]}:${m[6]}` };
+}
+function tiffDate(v, t) {
+  const le = v.getUint16(t) === 0x4949, u16 = p => v.getUint16(p, le), u32 = p => v.getUint32(p, le);
+  if (u16(t + 2) !== 42) return null;
+  const entries = off => {
+    const out = {}, n = u16(t + off);
+    for (let i = 0; i < n && i < 200; i++) { const e = t + off + 2 + i * 12; out[u16(e)] = { type: u16(e + 2), count: u32(e + 4), at: e + 8 }; }
+    return out;
+  };
+  const str = e => {
+    if (!e || e.type !== 2 || e.count < 19 || e.count > 64) return null;
+    const p = t + u32(e.at); let s = "";
+    for (let i = 0; i < e.count - 1; i++) s += String.fromCharCode(v.getUint8(p + i));
+    return s;
+  };
+  const i0 = entries(u32(t + 4));
+  let r = null;
+  if (i0[0x8769]) { const ex = entries(u32(i0[0x8769].at)); r = exifDateFromString(str(ex[0x9003])) || exifDateFromString(str(ex[0x9004])); }
+  return r || exifDateFromString(str(i0[0x0132]));
+}
+async function readExifDate(file) {
+  try {
+    const v = new DataView(await file.slice(0, 262144).arrayBuffer());
+    if (v.getUint16(0) !== 0xFFD8) return null;
+    let o = 2;
+    while (o + 4 < v.byteLength) {
+      if (v.getUint8(o) !== 0xFF) break;
+      const mk = v.getUint8(o + 1), len = v.getUint16(o + 2);
+      if (mk === 0xE1 && v.getUint32(o + 4) === 0x45786966 && v.getUint16(o + 8) === 0) return tiffDate(v, o + 10);
+      if (mk === 0xDA) break;
+      o += 2 + len;
+    }
+  } catch (e) { /* sem EXIF legível: usa a data do arquivo */ }
+  return null;
+}
+const dateTimeOfMs = ms => { const d = new Date(ms || Date.now()); return { date: ymd(d), time: `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}` }; };
+/* a foto reduzida pelo canvas perde o EXIF; sem isso o iPhone guardaria tudo com a data de hoje. Gravamos só a data/hora original. */
+async function injectExif(blob, dt) {
+  const ab = new Uint8Array(await blob.arrayBuffer());
+  if (ab[0] !== 0xFF || ab[1] !== 0xD8) return blob;
+  const s = `${dt.date.replace(/-/g, ":")} ${dt.time}\0`, seg = new Uint8Array(86), v = new DataView(seg.buffer);
+  seg[0] = 0xFF; seg[1] = 0xE1; v.setUint16(2, 84);
+  [0x45, 0x78, 0x69, 0x66, 0, 0].forEach((b, i) => { seg[4 + i] = b; });
+  const t = 10;                                    /* início do TIFF dentro do segmento */
+  [0x4D, 0x4D, 0, 0x2A].forEach((b, i) => { seg[t + i] = b; }); v.setUint32(t + 4, 8);
+  v.setUint16(t + 8, 1); v.setUint16(t + 10, 0x8769); v.setUint16(t + 12, 4); v.setUint32(t + 14, 1); v.setUint32(t + 18, 26); v.setUint32(t + 22, 0);
+  v.setUint16(t + 26, 2);
+  v.setUint16(t + 28, 0x9003); v.setUint16(t + 30, 2); v.setUint32(t + 32, 20); v.setUint32(t + 36, 56);
+  v.setUint16(t + 40, 0x9004); v.setUint16(t + 42, 2); v.setUint32(t + 44, 20); v.setUint32(t + 48, 56);
+  v.setUint32(t + 52, 0);
+  for (let i = 0; i < 20; i++) seg[t + 56 + i] = s.charCodeAt(i) || 0;
+  const out = new Uint8Array(ab.length + seg.length);
+  out.set(ab.subarray(0, 2), 0); out.set(seg, 2); out.set(ab.subarray(2), 2 + seg.length);
+  return new Blob([out], { type: "image/jpeg" });
+}
+
+/* ---- preparar uma foto: lê a data, reduz a 3000 px, faz a miniatura ---- */
+let prepChain = Promise.resolve();
+const emFila = fn => { const r = prepChain.then(fn); prepChain = r.catch(() => { }); return r; };   /* uma por vez: o iPhone não aguenta várias fotos grandes abertas juntas */
+const toBlob = (cv, q) => new Promise(r => cv.toBlob(r, "image/jpeg", q));
+async function prepararFoto(file) {
+  const exif = await readExifDate(file);
+  let bmp;
+  try { bmp = await createImageBitmap(file, { imageOrientation: "from-image" }); } catch (e) { bmp = await loadImg(file); }
+  const w = bmp.width || bmp.naturalWidth, h = bmp.height || bmp.naturalHeight;
+  if (!w || !h) throw new Error("decode");
+  const sc = Math.min(1, MAX_FULL / Math.max(w, h)), cw = Math.round(w * sc), ch = Math.round(h * sc);
+  const cv = document.createElement("canvas"); cv.width = cw; cv.height = ch;
+  const ctx = cv.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, cw, ch); ctx.imageSmoothingQuality = "high"; ctx.drawImage(bmp, 0, 0, cw, ch);
+  if (bmp.close) bmp.close();
+  const rawFull = await toBlob(cv, Q_FULL);
+  const ts = Math.min(1, MAX_THUMB / Math.max(cw, ch)), tw = Math.max(1, Math.round(cw * ts)), th = Math.max(1, Math.round(ch * ts));
+  const tc = document.createElement("canvas"); tc.width = tw; tc.height = th;
+  const tx = tc.getContext("2d"); tx.imageSmoothingQuality = "high"; tx.drawImage(cv, 0, 0, tw, th);
+  const thumb = await toBlob(tc, Q_THUMB);
+  cv.width = cv.height = 0; tc.width = tc.height = 0;      /* devolve a memória já */
+  if (!rawFull || !thumb) throw new Error("decode");
+  const dt = exif || dateTimeOfMs(file.lastModified);
+  return { full: await injectExif(rawFull, dt), thumb, day: dt.date, shot: `${dt.date}T${dt.time}` };
+}
+
+/* ---- enviar ---- */
+let ENVIO = null;
+async function pegarWake() {
+  const E = ENVIO; if (!E || E.wake || !("wakeLock" in navigator)) return;
+  try { E.wake = await navigator.wakeLock.request("screen"); E.wake.addEventListener("release", () => { E.wake = null; }); } catch (e) { }
+}
+function soltarWake() { const E = ENVIO; if (E && E.wake) { try { E.wake.release(); } catch (e) { } E.wake = null; } }
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && ENVIO && ENVIO.ativo) pegarWake(); });
+window.addEventListener("beforeunload", e => { if (ENVIO && ENVIO.ativo) { e.preventDefault(); e.returnValue = ""; } });
+
+async function comRetry(fn) {
+  for (let t = 0; ; t++) {
+    try { return await fn(); }
+    catch (e) { if (!isNetErr(e) || t >= 2) throw e; await sleep(1000 * 2 ** t); }
+  }
+}
+async function enviarUma(it) {
+  if (!it.prep) it.prep = await emFila(() => prepararFoto(it.file));
+  const p = it.prep, base = `${S.couple.id}/${it.id}`;
+  const path = `${base}.jpg`, thumb_path = `${base}_t.jpg`;
+  return comRetry(async () => {
+    const a = await sb.storage.from("media").upload(path, p.full, { contentType: "image/jpeg", upsert: true }); if (a.error) throw a.error;
+    const b = await sb.storage.from("media").upload(thumb_path, p.thumb, { contentType: "image/jpeg", upsert: true }); if (b.error) throw b.error;
+    const row = {
+      id: it.id, couple_id: S.couple.id, path, thumb_path, kind: "photo", taken_at: p.day, shot_at: p.shot, in_feed: false,
+      expires_at: new Date(Date.now() + PASSEIO_DIAS * 864e5).toISOString()   /* o banco refaz esta conta; é só o sinal de "passeio" */
+    };
+    const ins = await sb.from("media").insert(row).select().single();
+    if (ins.error) {
+      if (ins.error.code === "23505") { const got = await sb.from("media").select("*").eq("id", it.id).single(); if (got.data) return got.data; }
+      throw ins.error;
+    }
+    return ins.data;
+  });
+}
+function desenharEnvio() {
+  const E = ENVIO; if (!E) return;
+  const feitas = E.itens.filter(i => i.state === "ok" || i.state === "falha" || i.state === "parada").length, n = E.itens.length;
+  progEl.hidden = false;
+  if (E.pausado) {
+    progEl.innerHTML = `<div>Sem conexão. ${feitas} de ${n} enviadas.</div><div class="pb"><i style="width:${Math.round(feitas / n * 100)}%"></i></div><div class="prow"><button data-act="penv-cont">Continuar</button><button data-act="penv-parar">Parar por aqui</button></div>`;
+  } else {
+    progEl.innerHTML = `<div>Enviando ${Math.min(feitas + 1, n)} de ${n}</div><div class="pb"><i style="width:${Math.round(feitas / n * 100)}%"></i></div>`;
+  }
+}
+async function rodarEnvio() {
+  const E = ENVIO; if (!E) return;
+  E.pausado = false; E.ativo = true; pegarWake(); desenharEnvio();
+  const worker = async () => {
+    while (!E.pausado) {
+      const it = E.itens.find(i => i.state === "espera"); if (!it) return;
+      it.state = "indo";
+      try { const row = await enviarUma(it); it.state = "ok"; it.prep = null; E.linhas.push(row); placeRow(row); }
+      catch (e) {
+        if (isNetErr(e)) { it.state = "espera"; E.pausado = true; }
+        else { it.state = "falha"; it.prep = null; it.err = e && e.message === "decode" ? `${it.file.name}: não consegui abrir essa foto.` : `${it.file.name}: não subiu.`; }
+      }
+      desenharEnvio();
+    }
+  };
+  await Promise.all(Array.from({ length: PARALELO }, worker));
+  if (E.pausado) { E.ativo = false; soltarWake(); desenharEnvio(); return; }
+  await terminarEnvio();
+}
+async function terminarEnvio() {
+  const E = ENVIO; if (!E) return;
+  E.ativo = false; soltarWake(); ENVIO = null;
+  const ok = E.linhas, falhas = E.itens.filter(i => i.state === "falha");
+  refreshViews();
+  if (ok.length && partner()) { try { await sb.functions.invoke("avisar-fotos", { body: { count: ok.length, days: [...new Set(ok.map(r => r.taken_at))] } }); } catch (e) { } }
+  if (falhas.length) {
+    progEl.hidden = false;
+    progEl.innerHTML = `<div>${ok.length ? `${plural(ok.length, "foto subiu", "fotos subiram")}. ` : ""}${esc(falhas.slice(0, 2).map(f => f.err).join(" "))}${falhas.length > 2 ? ` E mais ${falhas.length - 2}.` : ""}</div><button data-act="fecharprog">Entendi</button>`;
+  } else {
+    progEl.hidden = true;
+    if (ok.length) toast(partner() ? `${plural(ok.length, "foto enviada", "fotos enviadas")}. ${partnerName()} recebe o aviso.` : `${plural(ok.length, "foto enviada", "fotos enviadas")}.`);
+  }
+}
+function iniciarEnvio(files) {
+  if (ENVIO && ENVIO.ativo) { toast("Já tem um envio em andamento."); return; }
+  const itens = files.map(f => ({ file: f, id: crypto.randomUUID(), state: "espera", prep: null, err: "" }));
+  ENVIO = { itens, linhas: [], pausado: false, ativo: false, wake: null };
+  rodarEnvio();
+}
+function pedirEnvioPasseio() {
+  pickFiles("image/*,.heic", true, files => {
+    const fotos = files.filter(f => { const t = fileType(f); return t.startsWith("image/") && t !== "image/gif"; });
+    const fora = files.length - fotos.length;
+    if (!fotos.length) { toast("Aqui só entram fotos. Vídeo vai pelo botão Subir."); return; }
+    const p = partner();
+    openSheet({
+      focus: false,
+      view: () => `<h3>${fotos.length === 1 ? "Mandar 1 foto" : `Mandar ${fotos.length} fotos`}</h3>
+        <p class="hint">As fotos vão em alta qualidade e somem ${PASSEIO_DIAS} dias depois do envio, menos as que forem para o feed.${p ? ` ${esc(p.display_name || "Seu par")} recebe um aviso quando terminar.` : ""}</p>
+        ${fora ? `<p class="hint">${plural(fora, "arquivo ficou de fora", "arquivos ficaram de fora")} (não é foto).</p>` : ""}
+        <p class="hint">Deixe o Us aberto até acabar.</p>
+        <button class="btn" data-s="go">Enviar</button><button class="btn ghost" data-s="no">Cancelar</button>`,
+      on: { go: () => { closeSheet(); iniciarEnvio(fotos); }, no: () => closeSheet() }
+    });
+  });
+}
+progEl.addEventListener("click", e => {
+  const t = e.target.closest("[data-act]"); if (!t || !ENVIO) return;
+  if (t.dataset.act === "penv-cont") { if (navigator.onLine === false) { toast("Ainda sem conexão."); return; } rodarEnvio(); }
+  if (t.dataset.act === "penv-parar") { ENVIO.itens.forEach(i => { if (i.state === "espera") i.state = "parada"; }); terminarEnvio(); }
+});
+
+/* ---- salvar no celular ---- */
+async function urlAssinada(path) {
+  if (fresh(path)) return urlCache.get(path).url;
+  const { data, error } = await sb.storage.from("media").createSignedUrl(path, 3600);
+  if (error) throw error;
+  urlCache.set(path, { url: data.signedUrl, exp: Date.now() + 55 * 60e3 });
+  return data.signedUrl;
+}
+async function baixarFoto(m, n) {
+  const r = await fetch(await urlAssinada(m.path)); if (!r.ok) throw new Error("download");
+  return new File([await r.blob()], `Us-${m.taken_at}-${String(n).padStart(3, "0")}.jpg`, { type: "image/jpeg", lastModified: m.shot_at ? new Date(m.shot_at).getTime() : Date.now() });
+}
+function salvarFotos(rows) {
+  rows = [...rows].sort((a, b) => a.taken_at.localeCompare(b.taken_at) || cmpShot(a, b));
+  if (!rows.length) return;
+  if (isIos() && canShareFiles()) return salvarNoCelular(rows);
+  return baixarNoComputador(rows);
+}
+/* iPhone: a janela de compartilhar só abre com um toque, então o lote é preparado antes e o toque só entrega */
+function salvarNoCelular(rows) {
+  const lotes = []; for (let i = 0; i < rows.length; i += LOTE_SALVAR) lotes.push(rows.slice(i, i + LOTE_SALVAR));
+  const m = { i: 0, estado: "prep", files: [], aviso: "" };
+  const def = {
+    model: m, focus: false,
+    view: () => {
+      const nlote = lotes.length, tot = rows.length;
+      const cab = `<h3>${tot === 1 ? "Salvar 1 foto" : `Salvar ${tot} fotos`}</h3>`;
+      if (m.estado === "fim") return `${cab}<p class="hint">Pronto. ${tot === 1 ? "A foto está" : `As ${tot} fotos estão`} no app Fotos do seu iPhone.</p><button class="btn" data-s="fim">Fechar</button>`;
+      const lote = nlote > 1 ? `lote ${m.i + 1} de ${nlote}` : "";
+      const intro = nlote > 1 ? `<p class="hint">Para não travar o iPhone, vão ${nlote} lotes de até ${LOTE_SALVAR} fotos. Em cada um, toque em Salvar imagens.</p>` : `<p class="hint">Na janela que abrir, toque em Salvar imagens.</p>`;
+      if (m.estado === "prep") return `${cab}${intro}<p class="hint"><b>Preparando ${lote || "as fotos"}…</b></p><button class="btn" disabled>Preparando…</button>`;
+      if (m.estado === "erro") return `${cab}<p class="msg err" role="alert">Não consegui baixar ${lote ? "este lote" : "a foto"}. Confira a internet e tente de novo.</p><button class="btn" data-s="tentar">Tentar de novo</button>`;
+      return `${cab}${intro}${m.aviso ? `<p class="hint">${esc(m.aviso)}</p>` : ""}<button class="btn" data-s="salvar">Salvar ${lote ? `${lote} (${plural(m.files.length, "foto", "fotos")})` : "foto"}</button><button class="btn ghost" data-s="fim">Fechar</button>`;
+    },
+    on: {
+      salvar: async () => {
+        m.aviso = "";
+        try { await navigator.share({ files: m.files, title: "Fotos do passeio" }); }
+        catch (e) {
+          if (e && (e.name === "AbortError" || e.name === "NotAllowedError")) { m.aviso = "A janela foi fechada. Toque de novo para salvar este lote."; if (SH === def) drawSheet(); return; }
+          m.estado = "erro"; if (SH === def) drawSheet(); return;
+        }
+        m.i++; m.files = [];
+        if (m.i >= lotes.length) { m.estado = "fim"; drawSheet(); return; }
+        preparar();
+      },
+      tentar: () => preparar(),
+      fim: () => closeSheet()
+    }
+  };
+  async function preparar() {
+    m.estado = "prep"; if (SH === def) drawSheet();
+    try {
+      const out = [], lote = lotes[m.i];
+      for (let k = 0; k < lote.length; k += 4) {
+        out.push(...await Promise.all(lote.slice(k, k + 4).map((r, j) => baixarFoto(r, m.i * LOTE_SALVAR + k + j + 1))));
+        if (SH !== def) return;
+      }
+      m.files = out; m.estado = "pronto";
+    } catch (e) { console.warn("lote", e); m.estado = "erro"; }
+    if (SH === def) drawSheet();
+  }
+  openSheet(def);
+  preparar();
+}
+/* computador: baixa os arquivos um por um */
+async function baixarNoComputador(rows) {
+  progEl.hidden = false;
+  try {
+    for (let i = 0; i < rows.length; i++) {
+      progEl.innerHTML = `<div>Baixando ${i + 1} de ${rows.length}</div><div class="pb"><i style="width:${Math.round(i / rows.length * 100)}%"></i></div>`;
+      const f = await baixarFoto(rows[i], i + 1), u = URL.createObjectURL(f), a = document.createElement("a");
+      a.href = u; a.download = f.name; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(u), 20000); await sleep(350);
+    }
+    progEl.hidden = true; toast(rows.length === 1 ? "Foto baixada." : `${rows.length} fotos baixadas. Veja a pasta Downloads.`);
+  } catch (e) { progEl.innerHTML = `<div>Não consegui baixar tudo. Confira a internet e tente de novo.</div><button data-act="fecharprog">Entendi</button>`; }
+}
+
+/* ---- telas ---- */
+function passeioCardHTML() {
+  const n = S.passeio.length;
+  if (!n) return `<button class="pcard" data-act="passeio"><span class="pc-body"><span class="pc-t">Fotos do passeio</span><span class="pc-d">Quem tirou manda em alta qualidade. Quem não tirou salva tudo no celular de uma vez.</span></span><span class="pc-go">${ic("next", 18, 2.2)}</span></button>`;
+  const soon = Math.min(...S.passeio.map(diasRestantes));
+  const th = [...S.passeio].sort((a, b) => cmpShot(b, a)).slice(0, 3).map(m => `<span>${imgTag(m.thumb_path || m.path, "", 'loading="lazy" decoding="async"')}</span>`).join("");
+  return `<button class="pcard filled" data-act="passeio"><span class="pc-th">${th}</span><span class="pc-body"><span class="pc-t">Fotos do passeio</span><span class="pc-d">${plural(n, "foto", "fotos")} · a mais antiga some ${quando(soon)}</span></span><span class="pc-go">${ic("next", 18, 2.2)}</span></button>`;
+}
+function renderPasseio() {
+  const sel = UI.sel, dias = passeioDias(), total = S.passeio.length, y = panel.scrollTop;
+  const chk = '<span class="chk"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg></span>';
+  const grupos = dias.map(({ day, list }) => {
+    const nome = dayTitle(day), quem = new Set(list.map(m => m.created_by));
+    const quemTxt = quem.size > 1 ? "Os dois enviaram" : quem.has(null) || quem.has(undefined) ? "" : `${esc(nameOf([...quem][0]))} enviou`;
+    const dmin = Math.min(...list.map(diasRestantes));
+    const meta = [nome ? esc(dayLabel(day)) : "", plural(list.length, "foto", "fotos"), quemTxt, `some ${quando(dmin)}`].filter(Boolean).join(" · ");
+    const marcadas = sel ? list.filter(m => sel.has(m.id)).length : 0;
+    const acao = sel ? `<button class="link-sm" data-pday="${day}">${marcadas === list.length ? "Desmarcar o dia" : "Marcar o dia"}</button>` : `<button class="link-sm" data-pday="${day}">Salvar o dia</button>`;
+    const cab = nome
+      ? `<button class="pday-t" data-dayname="${day}" aria-label="Mudar o nome do dia">${esc(nome)}${ic("edit", 14, 2)}</button>`
+      : `<h3>${esc(dayLabel(day))}</h3>`;
+    return `<section class="pday"><div class="pday-h"><div style="min-width:0">${cab}<div class="pday-m">${meta}</div>${nome ? "" : `<button class="link-sm" data-dayname="${day}" style="margin-top:2px">Dar um nome ao dia</button>`}</div>${acao}</div>
+      <div class="pgrid">${list.map(m => `<button class="tile ptile" data-pm="${m.id}" ${sel ? `aria-pressed="${sel.has(m.id)}"` : ""} aria-label="Foto de ${esc(dayLabel(day))}">${imgTag(m.thumb_path || m.path, "", 'loading="lazy" decoding="async"')}${sel ? chk : ""}</button>`).join("")}</div></section>`;
+  }).join("");
+  const vazio = `<div class="empty-state"><h3>Nenhuma foto de passeio</h3><p>Quem tirou as fotos manda aqui. A outra pessoa recebe um aviso e salva tudo no celular de uma vez.</p><button class="btn small" data-act="p-enviar">Mandar fotos</button></div>`;
+  const barra = total ? (sel
+    ? `<div class="bar-actions"><button class="pbtn" data-act="p-todas">Marcar todas</button><button class="pbtn" data-act="p-cancelar">Cancelar</button></div><p class="sub-title" style="margin-top:8px">Toque nas fotos de que mais gostaram.</p>`
+    : `<div class="bar-actions"><button class="pbtn red" data-act="p-salvar-todas">Salvar todas no celular</button><button class="pbtn" data-act="p-escolher">Escolher preferidas</button></div>`) : "";
+  const n = sel ? sel.size : 0;
+  const selbar = sel ? `<div class="selbar"><span>${n ? plural(n, "escolhida", "escolhidas") : "Nenhuma escolhida"}</span><button class="pbtn red" data-act="p-feed" ${n ? "" : "disabled"}>Pôr no feed</button><button class="pbtn" data-act="p-salvar-sel" ${n ? "" : "disabled"}>Salvar</button><button class="pbtn dng" data-act="p-apagar" ${n ? "" : "disabled"}>Apagar</button></div>` : "";
+  panel.innerHTML = `<div class="appbar"><button class="back" data-act="fecharpanel" aria-label="Voltar">${ic("back", 22)}Fotos</button><span class="acts"><button data-act="p-enviar" aria-label="Mandar fotos do passeio" style="display:flex;gap:6px;align-items:center;color:var(--red);font-weight:700;font-size:14.5px">${ic("upload", 20, 2.2)}Mandar</button></span></div>
+    <h1 class="big-title">Fotos do passeio</h1>
+    <p class="sub-title">${total ? `${plural(total, "foto", "fotos")}. ` : ""}Somem ${PASSEIO_DIAS} dias depois do envio. As que vão para o feed ficam para sempre.</p>
+    ${barra}${total ? grupos : vazio}<div style="height:${sel ? 96 : 30}px"></div>${selbar}`;
+  panel.scrollTop = y; $("main").scrollLeft = 0;
+  hydrate();
+}
+function openDayName(day) {
+  const m = { name: dayTitle(day) };
+  openSheet({
+    model: m,
+    view: () => `<h3>${esc(dayLabel(day))}</h3><p class="hint">Dê um nome ao dia para os dois lembrarem. É opcional.</p>
+      <form novalidate><label class="field"><span>Nome do dia</span><input data-m="name" maxlength="80" value="${esc(m.name)}" autocomplete="off" placeholder="Ex.: Jantar no Glouton"></label>
+      <button class="btn" type="submit">Salvar</button>${dayTitle(day) ? '<button type="button" class="btn ghost" data-s="tirar">Tirar o nome</button>' : ""}</form>`,
+    on: {
+      submit: async () => {
+        const title = m.name.trim();
+        if (!title) { if (dayTitle(day)) return tirar(); closeSheet(); return; }
+        const r = await q(sb.from("media_day_titles").upsert({ couple_id: S.couple.id, day, title, updated_at: new Date().toISOString() }, { onConflict: "couple_id,day" }).select().single());
+        S.dayTitles = S.dayTitles.filter(x => x.day !== day).concat(r); closeSheet(); refreshViews(); toast("Nome salvo.");
+      },
+      tirar: () => tirar()
+    }
+  });
+  async function tirar() {
+    await q(sb.from("media_day_titles").delete().eq("couple_id", S.couple.id).eq("day", day));
+    S.dayTitles = S.dayTitles.filter(x => x.day !== day); closeSheet(); refreshViews(); toast("Nome tirado.");
+  }
+}
+const chunks = (a, n) => { const o = []; for (let i = 0; i < a.length; i += n) o.push(a.slice(i, i + n)); return o; };
+async function porNoFeed(ids) {
+  const rows = [];
+  for (const c of chunks(ids, 50)) rows.push(...await q(sb.from("media").update({ in_feed: true }).in("id", c).select()));
+  rows.forEach(placeRow);
+  UI.sel = null; refreshViews();
+  toast(rows.length === 1 ? "Foi para o feed." : `${rows.length} fotos no feed.`);
+}
+function apagarFotos(ids) {
+  const rows = ids.map(findMedia).filter(Boolean);
+  askConfirm(rows.length === 1 ? "Apagar esta foto?" : `Apagar ${rows.length} fotos?`, "Elas somem para os dois e não dá para desfazer.", "Apagar", async () => {
+    for (const c of chunks(rows.map(r => r.id), 50)) await q(sb.from("media").delete().in("id", c));
+    const paths = rows.flatMap(r => [r.path, r.thumb_path]).filter(Boolean);
+    for (const c of chunks(paths, 100)) sb.storage.from("media").remove(c).catch(() => { });
+    const gone = new Set(rows.map(r => r.id));
+    S.media = S.media.filter(x => !gone.has(x.id)); S.passeio = S.passeio.filter(x => !gone.has(x.id));
+    UI.sel = null; closeSheet(); if (UI.viewer && gone.has(UI.viewer)) closeViewer(); refreshViews(); toast("Apagado.");
+  });
+}
+const marcarPasseio = (id) => { if (!UI.sel) return; UI.sel.has(id) ? UI.sel.delete(id) : UI.sel.add(id); renderPanel(); };
 
 /* ============ ações: viagens ============ */
 function openNewTrip() {
@@ -1858,10 +2243,18 @@ $("tabbar").addEventListener("click", e => {
 });
 let sugBusy = false;
 $("main").addEventListener("click", e => {
-  const t = e.target.closest("[data-media],[data-act],[data-seg],[data-list],[data-check],[data-delitem],[data-day],[data-mon],[data-trip],[data-place],[data-delev],[data-ev],[data-sug],[data-rate],[data-delsec]");
+  const t = e.target.closest("[data-media],[data-act],[data-seg],[data-list],[data-check],[data-delitem],[data-day],[data-mon],[data-trip],[data-place],[data-delev],[data-ev],[data-sug],[data-rate],[data-delsec],[data-pm],[data-dayname],[data-pday]");
   if (!t) return;
   const d = t.dataset;
   if (d.media) return openViewer(d.media);
+  if (d.pm) return UI.sel ? marcarPasseio(d.pm) : openViewer(d.pm);
+  if (d.dayname) return openDayName(d.dayname);
+  if (d.pday) {
+    const lista = S.passeio.filter(m => m.taken_at === d.pday);
+    if (!UI.sel) return salvarFotos(lista);
+    const todas = lista.every(m => UI.sel.has(m.id));
+    lista.forEach(m => todas ? UI.sel.delete(m.id) : UI.sel.add(m.id)); return renderPanel();
+  }
   if (d.seg) { UI.seg = d.seg; return render(true); }
   if (d.trip) return openPanel("trip", d.trip);
   if (d.place) return openPanel("place", d.place);
@@ -1884,11 +2277,19 @@ $("main").addEventListener("click", e => {
     novaviagem: openNewTrip, "trip-upload": tripUpload, "trip-pick": tripPick, "trip-del": deleteTrip,
     fecharpanel: () => closePanel(), fecharviewer: () => closeViewer(),
     "v-feed": async () => {
-      const x = S.media.find(v => v.id === UI.viewer); if (!x) return;
-      try { const r = await q(sb.from("media").update({ in_feed: !x.in_feed }).eq("id", x.id).select().single()); Object.assign(x, r); refreshViews(); toast(x.in_feed ? "Foi para o feed." : "Saiu do feed."); }
+      const x = findMedia(UI.viewer); if (!x) return;
+      try { const r = await q(sb.from("media").update({ in_feed: !x.in_feed }).eq("id", x.id).select().single()); placeRow(r); refreshViews(); toast(r.in_feed ? "Foi para o feed." : "Saiu do feed."); }
       catch (err) { toast(friendly(err)); }
     },
     "v-edit": openEditMedia, "v-del": deleteMedia,
+    "v-save": () => { const x = findMedia(UI.viewer); if (x) salvarFotos([x]); },
+    passeio: () => openPanel("passeio"), "p-enviar": pedirEnvioPasseio,
+    "p-salvar-todas": () => salvarFotos(S.passeio),
+    "p-escolher": () => { UI.sel = new Set(); renderPanel(); }, "p-cancelar": () => { UI.sel = null; renderPanel(); },
+    "p-todas": () => { UI.sel = UI.sel.size === S.passeio.length ? new Set() : new Set(S.passeio.map(m => m.id)); renderPanel(); },
+    "p-feed": () => UI.sel && UI.sel.size && porNoFeed([...UI.sel]).catch(err => toast(friendly(err))),
+    "p-salvar-sel": () => UI.sel && UI.sel.size && salvarFotos([...UI.sel].map(findMedia).filter(Boolean)),
+    "p-apagar": () => UI.sel && UI.sel.size && apagarFotos([...UI.sel]),
     novalista: openNewList, novasecao: newSection, darnota: toggleRated, organizar, voltarlista: () => { UI.openList = null; render(); }, fixar: togglePin, apagarlista: deleteList, copiarlista: copyList,
     hoje: () => { const n = todayDate(); UI.calY = n.getFullYear(); UI.calM = n.getMonth(); UI.selDay = ymd(n); render(true); },
     evento: () => openEventForm(), calendarios: openCalendarios
@@ -1993,7 +2394,7 @@ async function refresh() {
     if (!S.couple) return;
     const busy = SH || (document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName));
     if (busy) return;
-    if (UI.viewer && !S.media.find(x => x.id === UI.viewer)) closeViewer();
+    if (UI.viewer && !findMedia(UI.viewer)) closeViewer();
     refreshViews();
   } catch (e) { /* sem rede: mantém o que está na tela */ }
 }
@@ -2036,6 +2437,7 @@ async function init() {
   const h = location.hash || "";
   if (/type=recovery/.test(h)) UI.recovery = true;
   else if (/^#cal\b/.test(h)) { UI.tab = "cal"; history.replaceState(null, "", location.pathname); }
+  else if (/^#fotos\b/.test(h)) { UI.tab = "fotos"; UI.abrirPasseio = true; history.replaceState(null, "", location.pathname); }
   let hashErr = "";
   if (/error_code=otp_expired|error=access_denied/.test(h)) { hashErr = "O link venceu ou já foi usado. Peça um novo em Esqueci a senha."; history.replaceState(null, "", location.pathname); }
   sb.auth.onAuthStateChange((ev, session) => {
@@ -2054,18 +2456,21 @@ if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) {
      (nunca no meio de um formulário aberto ou enquanto a pessoa digita) */
   const tinhaVersao = !!navigator.serviceWorker.controller;
   let recarregarDepois = false;
-  const seguro = () => !SH && !(document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName));
+  const seguro = () => !SH && !(ENVIO && ENVIO.ativo) && !(document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName));
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     if (!tinhaVersao) return; // primeira vez neste aparelho: a página já é a versão nova
-    if (document.hidden || seguro()) location.reload(); else recarregarDepois = true;
+    if (ENVIO && ENVIO.ativo) recarregarDepois = true; else if (document.hidden || seguro()) location.reload(); else recarregarDepois = true;
   });
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) { if (recarregarDepois) location.reload(); return; }
+    if (document.hidden) { if (recarregarDepois && !(ENVIO && ENVIO.ativo)) location.reload(); return; }
     navigator.serviceWorker.getRegistration().then(r => r && r.update()).catch(() => { });
   });
 }
 if ("serviceWorker" in navigator) navigator.serviceWorker.addEventListener("message", e => {
   if (e.data && e.data.tipo === "abrir-calendario" && S.couple) { closePanel(); closeViewer(); closeSheet(); UI.tab = "cal"; render(); }
+  if (e.data && e.data.tipo === "abrir-fotos" && S.couple) { closePanel(); closeViewer(); closeSheet(); UI.tab = "fotos"; render(); openPanel("passeio"); }
 });
+if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) window.__usFotos = { S, UI, urlCache, readExifDate, injectExif, prepararFoto, passeioDias, render, openPanel, closeSheet, salvarFotos, exifDateFromString, iniciarEnvio, setSb: x => { sb = x; }, envio: () => ENVIO,
+  entrar: () => { gate.hidden = true; app.hidden = false; render(); } };
 init();
 })();

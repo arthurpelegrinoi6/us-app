@@ -1,5 +1,5 @@
 /* Guarda só os arquivos do próprio app. Nunca guarda respostas do Supabase, fontes ou fotos. */
-const VERSAO = "us-v10";
+const VERSAO = "us-v11";
 const ARQUIVOS = ["./", "index.html", "styles.css", "app.js", "manifest.webmanifest", "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png"];
 
 self.addEventListener("install", e => {
@@ -33,11 +33,11 @@ self.addEventListener("push", e => {
 self.addEventListener("notificationclick", e => {
   e.notification.close();
   const url = String((e.notification.data && e.notification.data.url) || "./");
-  const cal = /#cal/.test(url);
+  const cal = /#cal/.test(url), fotos = /#fotos/.test(url);
   e.waitUntil((async () => {
     const wins = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
     const aberta = wins.find(w => w.url.startsWith(self.registration.scope));
-    if (aberta) { try { await aberta.focus(); } catch (x) { } if (cal) aberta.postMessage({ tipo: "abrir-calendario" }); return; }
-    return self.clients.openWindow(new URL(cal ? "./#cal" : "./", self.registration.scope).href);
+    if (aberta) { try { await aberta.focus(); } catch (x) { } if (cal) aberta.postMessage({ tipo: "abrir-calendario" }); if (fotos) aberta.postMessage({ tipo: "abrir-fotos" }); return; }
+    return self.clients.openWindow(new URL(cal ? "./#cal" : fotos ? "./#fotos" : "./", self.registration.scope).href);
   })());
 });
