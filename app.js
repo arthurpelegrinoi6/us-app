@@ -529,11 +529,18 @@ function avatar(m, cls = "av") {
   if (m.avatar_path) return `<span class="${cls}">${imgTag(m.avatar_path, m.display_name || "")}</span>`;
   return `<span class="${cls} init" aria-hidden="true">${esc((m.display_name || "?").trim().charAt(0).toUpperCase())}</span>`;
 }
-function tile(m, extra = "") {
+/* data laranja de câmera dos anos 90: DD MM 'AA a partir de taken_at (só aparência) */
+function stampTxt(m) {
+  const x = /^(\d{4})-(\d{2})-(\d{2})/.exec(m.taken_at || "");
+  return x ? `${x[3]} ${x[2]} <span class="ap">'${x[1].slice(2)}</span>` : "";
+}
+function tile(m, extra = "", rev = false) {
   const media = m.kind === "video"
     ? `<video data-path="${esc(m.path)}" data-thumb="1" preload="metadata" muted playsinline aria-hidden="true"></video><span class="vid">${PLAY}</span>`
     : imgTag(m.thumb_path || m.path, m.caption || m.place || "Foto");
-  return `<button class="tile" data-media="${m.id}" aria-label="${m.kind === "video" ? "Vídeo" : "Foto"}${m.caption ? ": " + esc(m.caption) : ""}" ${extra}>${media}</button>`;
+  const label = `aria-label="${m.kind === "video" ? "Vídeo" : "Foto"}${m.caption ? ": " + esc(m.caption) : ""}"`;
+  if (rev) return `<button class="tile print" data-media="${m.id}" ${label} ${extra}><span class="ph">${media}<span class="stamp" aria-hidden="true">${stampTxt(m)}</span></span></button>`;
+  return `<button class="tile" data-media="${m.id}" ${label} ${extra}>${media}</button>`;
 }
 
 const SPOTIFY_RE = /^https:\/\/(open\.spotify\.com|spotify\.link)\/\S*$/;
@@ -576,7 +583,7 @@ function feedHTML() {
   </div>
   ${invite}
   ${aboutHTML()}
-  ${posts.length ? `<div class="grid">${posts.map(m => tile(m)).join("")}</div>` : `<div class="empty-state"><h3>O feed de vocês começa aqui</h3><p>Escolha as fotos que contam a história de vocês e elas aparecem nesta grade.</p><button class="btn small" data-act="novo">Fazer o primeiro post</button></div>`}
+  ${posts.length ? `<div class="grid rev">${posts.map(m => tile(m, "", true)).join("")}</div>` : `<div class="empty-state"><h3>O feed de vocês começa aqui</h3><p>Escolha as fotos que contam a história de vocês e elas aparecem nesta grade.</p><button class="btn small" data-act="novo">Fazer o primeiro post</button></div>`}
   <div style="height:16px"></div>`;
 }
 
@@ -658,10 +665,13 @@ function renderViewer() {
   const mediaEl = m.kind === "video"
     ? `<video data-path="${esc(m.path)}" controls playsinline preload="metadata"></video>`
     : imgTag(m.path, m.caption || "Foto");
+  const stage = UI.viewerFeed && m.in_feed
+    ? `<div class="vmedia rev"><div class="print"><div class="ph">${mediaEl}${m.kind === "video" ? "" : `<span class="stamp" aria-hidden="true">${stampTxt(m)}</span>`}</div></div></div>`
+    : `<div class="vmedia">${mediaEl}</div>`;
   viewer.innerHTML = `
     <div class="appbar"><button class="back" data-act="fecharviewer" aria-label="Voltar">${ic("back", 22)}Voltar</button><span></span></div>
     <div class="post-head"><span class="mini">${minis}</span><div><div class="who">${esc(coupleNames())}</div><div class="where">${esc(m.place || "")}</div></div></div>
-    <div class="vmedia">${mediaEl}</div>
+    ${stage}
     <div class="vact">
       <button class="pbtn ${m.in_feed ? "" : "red"}" data-act="v-feed">${m.in_feed ? "Tirar do feed" : "Pôr no feed"}</button>
       ${m.expires_at ? '<button class="pbtn" data-act="v-save">Salvar no celular</button>' : '<button class="pbtn" data-act="v-edit">Editar detalhes</button>'}
@@ -671,7 +681,7 @@ function renderViewer() {
       <div class="date">${esc(fmtLong(m.taken_at))}${m.place ? ` · ${esc(m.place)}` : ""}${trip ? ` · ${esc(trip.name)}` : ""}${m.in_feed ? " · no feed" : ""}${m.expires_at ? ` · some ${quando(diasRestantes(m))}` : ""}</div></div>`;
   hydrate();
 }
-function openViewer(id) { UI.viewer = id; renderViewer(); viewer.scrollTop = 0; viewer.classList.add("on"); }
+function openViewer(id, fromFeed = false) { UI.viewer = id; UI.viewerFeed = fromFeed; renderViewer(); viewer.scrollTop = 0; viewer.classList.add("on"); }
 function closeViewer(quick) { UI.viewer = null; viewer.classList.remove("on"); const v = viewer.querySelector("video"); if (v) v.pause(); if (quick) viewer.innerHTML = ""; }
 
 /* ---- listas ---- */
@@ -2246,7 +2256,7 @@ $("main").addEventListener("click", e => {
   const t = e.target.closest("[data-media],[data-act],[data-seg],[data-list],[data-check],[data-delitem],[data-day],[data-mon],[data-trip],[data-place],[data-delev],[data-ev],[data-sug],[data-rate],[data-delsec],[data-pm],[data-dayname],[data-pday]");
   if (!t) return;
   const d = t.dataset;
-  if (d.media) return openViewer(d.media);
+  if (d.media) return openViewer(d.media, !!t.closest(".grid.rev"));
   if (d.pm) return UI.sel ? marcarPasseio(d.pm) : openViewer(d.pm);
   if (d.dayname) return openDayName(d.dayname);
   if (d.pday) {
