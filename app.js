@@ -2,6 +2,21 @@
 (function () {
 "use strict";
 
+/* ============ ambiente ============
+   A cópia de teste (/us-teste/) mora no mesmo endereço-base do app real e usa o mesmo banco. Para não misturar
+   login, aparelho e preferências no mesmo navegador, tudo que é guardado localmente usa chaves próprias por ambiente.
+   A escolha é feita só aqui. */
+const AMBIENTE = location.pathname.includes("/us-teste") ? "teste" : "real";
+const TESTE = AMBIENTE === "teste";
+const AUTH_KEY = TESTE ? "us-teste-auth" : "us-auth";
+const SESSAO_DB = TESTE ? "us-teste-sessao" : "us-sessao";
+const HID_KEY = TESTE ? "us-teste-cal-ocultos" : "us-cal-ocultos";
+if (TESTE) {
+  try { document.title = "Us (teste)"; } catch (e) { }
+  const faixa = document.createElement("div"); faixa.className = "amb-teste"; faixa.textContent = "Ambiente de teste"; faixa.setAttribute("role", "note");
+  document.body.appendChild(faixa);
+}
+
 /* ============ conexão ============ */
 const SB_URL = "https://qjouhtitpufjnhocbnbs.supabase.co";
 const SB_KEY = "sb_publishable_jFwJ41vOmpU4uTI44YbPdA_TxmA53gS";
@@ -61,7 +76,8 @@ const IC = {
   note: '<path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/>', check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
   x: '<path d="M6 6l12 12M18 6 6 18"/>', copy: '<rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
   grip: '<path d="M5 9h14M5 15h14"/>', repeat: '<path d="m17 2 4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15"/><path d="m7 22-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/>',
-  edit: '<path d="M12 20h8"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>', pinfill: '<path d="M9 4h6l-1 6 3 3v2H7v-2l3-3Z" fill="currentColor"/><path d="M12 15v6"/>'
+  edit: '<path d="M12 20h8"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>', pinfill: '<path d="M9 4h6l-1 6 3 3v2H7v-2l3-3Z" fill="currentColor"/><path d="M12 15v6"/>',
+  alarm: '<circle cx="12" cy="13" r="7.5"/><path d="M12 9.5V13l2.5 1.5"/><path d="M4.5 5.5 7.5 3M19.5 5.5 16.5 3"/>', tcheck: '<circle cx="12" cy="12" r="9"/><path d="m8 12.5 3 3 5-6"/>'
 };
 function ic(name, size = 22, sw = 2) {
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${IC[name]}</svg>`;
@@ -69,7 +85,7 @@ function ic(name, size = 22, sw = 2) {
 const PLAY = '<svg width="18" height="18" viewBox="0 0 24 24" fill="#fff" aria-hidden="true"><path d="M7 4.5v15l12.5-7.5Z"/></svg>';
 
 /* ============ estado ============ */
-const S = { user: null, members: [], couple: null, media: [], passeio: [], dayTitles: [], trips: [], lists: [], items: [], events: [], calendars: [], dates: [], sections: [], loaded: false, lastLoad: 0 };
+const S = { user: null, members: [], couple: null, media: [], passeio: [], dayTitles: [], trips: [], lists: [], items: [], events: [], calendars: [], dates: [], sections: [], taskRem: [], loaded: false, lastLoad: 0 };
 const t0 = todayDate();
 const UI = {
   tab: "feed", seg: "datas", openList: null, panel: null, viewer: null,
@@ -150,7 +166,7 @@ async function loadData() {
   S.members = sortMembers(mem);
   if (!me()) { S.couple = null; return false; }
   const coupleId = me().couple_id;
-  const [couple, media, trips, lists, items, events, cals, dts, secs, dtit] = await Promise.all([
+  const [couple, media, trips, lists, items, events, cals, dts, secs, dtit, rems] = await Promise.all([
     q(sb.from("couples").select("*").eq("id", coupleId).single()),
     fetchAll("media", b => b.order("taken_at", { ascending: false }).order("created_at", { ascending: false }).order("id")),
     q(sb.from("trips").select("*").order("created_at", { ascending: false })),
@@ -160,9 +176,10 @@ async function loadData() {
     sb.from("calendars").select("*").order("created_at", { ascending: true }).then(r => r.error ? [] : r.data, () => []),
     sb.from("couple_dates").select("*").order("created_at", { ascending: true }).then(r => r.error ? [] : r.data, () => []),
     sb.from("list_sections").select("*").order("position", { ascending: true }).then(r => r.error ? [] : r.data, () => []),
-    sb.from("media_day_titles").select("*").then(r => r.error ? [] : r.data, () => [])
+    sb.from("media_day_titles").select("*").then(r => r.error ? [] : r.data, () => []),
+    sb.from("task_reminders").select("*").then(r => r.error ? [] : r.data, () => [])
   ]);
-  S.dates = dts; S.sections = secs;
+  S.dates = dts; S.sections = secs; S.taskRem = rems;
   S.dayTitles = dtit;
   S.couple = couple; S.media = media.filter(m => !m.expires_at); S.passeio = media.filter(m => m.expires_at); S.trips = trips; S.lists = lists; S.items = items; S.events = events; S.calendars = cals;
   S.loaded = true; S.lastLoad = Date.now();
@@ -484,7 +501,7 @@ async function signOut() {
   resetState(); UI.authTab = "entrar"; showAuth();
 }
 function resetState() {
-  Object.assign(S, { user: null, members: [], couple: null, media: [], passeio: [], dayTitles: [], trips: [], lists: [], items: [], events: [], calendars: [], dates: [], sections: [], loaded: false });
+  Object.assign(S, { user: null, members: [], couple: null, media: [], passeio: [], dayTitles: [], trips: [], lists: [], items: [], events: [], calendars: [], dates: [], sections: [], taskRem: [], loaded: false });
   Object.assign(UI, { tab: "feed", openList: null, panel: null, viewer: null, dflow: null });
   urlCache.clear(); closePanel(true); closeViewer(true); closeSheet();
 }
@@ -511,6 +528,7 @@ function enterApp() {
   document.querySelectorAll(".tab").forEach(t => t.dataset.tab === UI.tab ? t.setAttribute("aria-current", "page") : t.removeAttribute("aria-current"));
   render();
   if (UI.abrirPasseio) { UI.abrirPasseio = false; openPanel("passeio"); }
+  if (UI.abrirTarefa) { const a = UI.abrirTarefa; UI.abrirTarefa = null; abrirTarefaDoAviso(a.id, a.modo); }
 }
 
 /* ============ telas ============ */
@@ -518,7 +536,9 @@ function render(keep) {
   if (!S.couple) return;
   const y = view.scrollTop;
   view.innerHTML = { feed: feedHTML, fotos: fotosHTML, listas: listasHTML, cal: calHTML }[UI.tab]();
-  $("fab").innerHTML = UI.tab === "listas" && UI.openList === null ? `<button class="compose" data-act="novalista" aria-label="Nova lista">${ic("edit", 22)}</button>` : "";
+  const lAberta = UI.tab === "listas" && UI.openList !== null ? S.lists.find(l => l.id === UI.openList) : null;
+  $("fab").innerHTML = UI.tab === "listas" && UI.openList === null ? `<button class="compose" data-act="novalista" aria-label="Nova lista">${ic("edit", 22)}</button>`
+    : lAberta && lAberta.auto_key === "tasks" ? `<button class="compose" data-act="novatarefa" aria-label="Nova tarefa">${ic("plus", 24, 2.4)}</button>` : "";
   view.scrollTop = keep ? y : 0;
   fitAll();
   document.querySelectorAll(".tab").forEach(t => t.dataset.tab === UI.tab ? t.setAttribute("aria-current", "page") : t.removeAttribute("aria-current"));
@@ -717,17 +737,19 @@ function sugestoesHTML() {
   return `<div class="ngroup-h">Sugestões</div><div class="sugs">${falta.map(m => `<button class="sug" data-sug="${m.k}"><span class="e" aria-hidden="true">${m.e}</span>${esc(m.t)}</button>`).join("")}</div><p class="sug-h">Toque para criar a lista na hora, já com as seções.</p>`;
 }
 function listasHTML() {
-  if (UI.openList !== null) { const html = noteHTML(); if (html) return html; UI.openList = null; }
+  if (UI.openList !== null) { const Lo = S.lists.find(l => l.id === UI.openList); const html = Lo && Lo.auto_key === "tasks" ? tarefasHTML() : noteHTML(); if (html) return html; UI.openList = null; }
   const row = L => `<button class="nrow" data-list="${L.id}"><b>${esc(L.title)}</b><span><em>${esc(relDay(L.updated_at))}</em>${esc(listPreview(L))}</span></button>`;
-  const sorted = [...S.lists].sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
+  const comuns = S.lists.filter(l => l.auto_key !== "tasks");
+  const sorted = [...comuns].sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
   const pins = sorted.filter(l => l.pinned), rest = sorted.filter(l => !l.pinned);
   return `<div class="notes-app">
     <div class="nbar" style="background:var(--group)"><span></span><span style="font-weight:600;color:var(--ink-2);font-size:13px">${esc(coupleNames())}</span></div>
     <h1 class="big-title">Listas</h1>
-    ${!S.lists.length ? `<div class="empty-state"><h3>Uma lista para cada vontade</h3><p>Restaurantes para conhecer, filmes, viagens, compras da casa. Toque no lápis para criar a primeira.</p></div>` : ""}
+    ${tarefasCardHTML()}
+    ${!comuns.length ? `<div class="empty-state"><h3>Uma lista para cada vontade</h3><p>Restaurantes para conhecer, filmes, viagens, compras da casa. Toque no lápis para criar a primeira.</p></div>` : ""}
     ${pins.length ? `<div class="ngroup-h">Fixadas</div><div class="ngroup">${pins.map(row).join("")}</div>` : ""}
     ${rest.length ? `<div class="ngroup-h">Do casal</div><div class="ngroup">${rest.map(row).join("")}</div>` : ""}
-    ${S.lists.length ? `<div class="ncount">${plural(S.lists.length, "lista", "listas")}</div>` : ""}
+    ${comuns.length ? `<div class="ncount">${plural(comuns.length, "lista", "listas")}</div>` : ""}
     ${sugestoesHTML()}
   </div>`;
 }
@@ -758,11 +780,193 @@ function noteHTML() {
   </div>`;
 }
 
+/* ---- tarefas: lista especial "Tarefas" (uma por casal, criada pelo banco) ---- */
+const tasksList = () => S.lists.find(l => l.auto_key === "tasks") || null;
+const isTask = it => { const L = tasksList(); return !!(L && it && it.list_id === L.id); };
+const taskAll = () => { const L = tasksList(); return L ? S.items.filter(i => i.list_id === L.id) : []; };
+const todayYmd = () => ymd(new Date());
+const isOverdue = t => !t.done && !!t.due_on && t.due_on < todayYmd();
+/* de quem é, do ponto de vista de quem está olhando: mine (para você), both (dos dois), other (do parceiro) */
+const taskGroup = t => t.assignee === (S.user && S.user.id) ? "mine" : t.assignee ? "other" : "both";
+const GRUPO_ORDEM = { mine: 0, both: 1, other: 2 };
+/* abertas: o que é seu primeiro; dentro de cada grupo, atrasadas, depois por prazo (sem prazo por último), depois a mais antiga */
+const cmpTask = (a, b) => GRUPO_ORDEM[taskGroup(a)] - GRUPO_ORDEM[taskGroup(b)]
+  || (isOverdue(b) - isOverdue(a))
+  || String(a.due_on || "9999").localeCompare(String(b.due_on || "9999"))
+  || String(a.created_at).localeCompare(String(b.created_at)) || a.id.localeCompare(b.id);
+const myReminder = id => S.taskRem.find(r => r.item_id === id && !r.sent_at && new Date(r.remind_at) > new Date()) || null;
+function dueLabel(t) {
+  const d = parseYmd(t.due_on), diff = dayDiff(d, todayDate());
+  if (diff < 0) return diff === -1 ? "venceu ontem" : `venceu há ${-diff} dias`;
+  if (diff === 0) return "hoje";
+  if (diff === 1) return "amanhã";
+  if (diff < 7) return SEM[d.getDay()];
+  return fmtShort(t.due_on, d.getFullYear() !== t0.getFullYear());
+}
+const horaTxt = d => d.getMinutes() ? `${d.getHours()}h${pad(d.getMinutes())}` : `${d.getHours()}h`;
+function quandoTxt(iso) {
+  const d = new Date(iso), diff = dayDiff(new Date(d.getFullYear(), d.getMonth(), d.getDate()), todayDate());
+  const dia = diff === 0 ? "hoje" : diff === 1 ? "amanhã" : diff > 1 && diff < 7 ? SEM[d.getDay()] : fmtShort(ymd(d), d.getFullYear() !== t0.getFullYear());
+  return `${dia} ${horaTxt(d)}`;
+}
+const CHECK_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>';
+function taskMeta(t, curto) {
+  const out = [], g = taskGroup(t), od = isOverdue(t), rem = t.done ? null : myReminder(t.id);
+  if (curto) out.push(`<span>${g === "mine" ? "Para você" : g === "both" ? "Dos dois" : esc("Para " + partnerName())}</span>`);
+  else if (g !== "other" && t.created_by && t.created_by !== (S.user && S.user.id)) out.push(`<span>${esc(nameOf(t.created_by))} pediu</span>`);
+  if (t.due_on && !t.done) out.push(`<span class="${od ? "late" : ""}">${esc(dueLabel(t))}</span>`);
+  if (rem) out.push(`<span class="alarm">${ic("alarm", 13, 2)}${esc(quandoTxt(rem.remind_at))}</span>`);
+  return out.length ? `<span class="tmeta">${out.join("")}</span>` : "";
+}
+function taskRowHTML(t, curto) {
+  const od = isOverdue(t);
+  return `<div class="citem trow ${t.done ? "done" : ""} ${od ? "od" : ""}" data-item="${t.id}"><button class="cbox" data-check="${t.id}" aria-pressed="${t.done}" aria-label="${t.done ? "Desmarcar" : "Marcar como feita"}: ${esc(t.text)}">${CHECK_SVG}</button><button class="tbody" data-tarefa="${t.id}" aria-label="Abrir a tarefa: ${esc(t.text)}"><span class="tx">${esc(t.text)}</span>${taskMeta(t, curto)}</button></div>`;
+}
+function tarefasCardHTML() {
+  const L = tasksList(); if (!L) return "";
+  const all = taskAll(), open = all.filter(t => !t.done).sort(cmpTask), n = open.length;
+  const late = open.filter(isOverdue).length;
+  const vazio = !n ? `<p class="tvazio">${all.length ? "Tudo em dia." : "Nada pendente por aqui."}<span>${partner() ? `Passe uma tarefa para ${esc(partnerName())} ou anote uma para você.` : "Anote o que falta fazer."}</span></p>` : "";
+  return `<section class="tcard" aria-label="Tarefas">
+    <button class="thead" data-act="vertarefas" aria-label="Abrir todas as tarefas"><span class="tic">${ic("tcheck", 22, 2)}</span><span class="ttl">Tarefas</span><span class="tcount${late ? " hot" : ""}">${n ? (late ? `${plural(n, "aberta", "abertas")}, ${late} atrasada${late > 1 ? "s" : ""}` : plural(n, "aberta", "abertas")) : "em dia"}</span></button>
+    ${n ? open.slice(0, 3).map(t => taskRowHTML(t, true)).join("") : vazio}
+    <div class="tfoot"><button class="tall" data-act="vertarefas">${n > 3 ? `Ver todas (${n})` : "Ver todas"}${ic("next", 14, 2.6)}</button><button class="tadd" data-act="novatarefa" aria-label="Nova tarefa">${ic("plus", 16, 2.6)}Nova tarefa</button></div>
+  </section>`;
+}
+function tarefasHTML() {
+  const L = tasksList(); if (!L) return "";
+  const all = taskAll(), open = all.filter(t => !t.done).sort(cmpTask), feitas = all.filter(t => t.done).sort((a, b) => String(b.done_at || b.created_at).localeCompare(String(a.done_at || a.created_at)));
+  const late = open.filter(isOverdue).length;
+  const grupos = [["mine", "Para você"], ["other", `Para ${partnerName()}`], ["both", "Dos dois"]];
+  const blocos = grupos.map(([k, nome]) => { const its = open.filter(t => taskGroup(t) === k); return its.length ? `<div class="sec"><div class="ngroup-h">${esc(nome)}<span>${its.length}</span></div>${its.map(t => taskRowHTML(t, false)).join("")}</div>` : ""; }).join("");
+  const sub = open.length ? `${plural(open.length, "aberta", "abertas")}${late ? ` · ${late} atrasada${late > 1 ? "s" : ""}` : ""}` : (all.length ? "Tudo em dia." : "");
+  return `<div class="lnote tnote">
+    <div class="nbar"><button data-act="voltarlista" class="back" style="color:var(--red);font-size:16px;font-weight:400">${ic("back", 20, 2.4)}Listas</button><span></span></div>
+    <h1 class="t-title">Tarefas</h1>
+    ${sub ? `<p class="t-sub${late ? " hot" : ""}">${sub}</p>` : ""}
+    ${!all.length ? `<div class="empty-state"><h3>O que falta fazer, dividido</h3><p>Toque no + para anotar uma tarefa. ${partner() ? `Se for para ${esc(partnerName())}, ${esc(partnerName())} recebe um aviso.` : ""}</p></div>` : ""}
+    ${blocos}
+    ${feitas.length ? `<button class="t-feitas" data-act="feitas" aria-expanded="${!!UI.tarefasFeitas}">Feitas (${feitas.length})<span class="chev ${UI.tarefasFeitas ? "open" : ""}">${ic("next", 16, 2.4)}</span></button>${UI.tarefasFeitas ? `<div class="sec">${feitas.slice(0, 60).map(t => taskRowHTML(t, false)).join("")}</div>` : ""}` : ""}
+  </div>`;
+}
+
+/* avisa o servidor para entregar os avisos pendentes agora (sem isso o aviso sai em até 1 minuto); erros não importam */
+async function avisarTarefas() { try { await sb.functions.invoke("avisar-tarefas", { body: {} }); } catch (e) { } }
+
+function openTarefa(id) {
+  const L = tasksList(); const t = id ? S.items.find(i => i.id === id) : null; if (!L || (id && !t)) return;
+  const eu = S.user.id, p = partner();
+  const m = { text: t ? t.text : "", who: t ? (t.assignee || "") : (p ? "" : eu), due: t && t.due_on ? t.due_on : "", err: "" };
+  const quem = [[eu, "Para mim"], ...(p ? [[p.user_id, `Para ${p.display_name || "quem você ama"}`], ["", "Dos dois"]] : [])];
+  const rem = t && !t.done ? myReminder(t.id) : null;
+  openSheet({
+    model: m, focus: !t,
+    view: () => `<h3>${t ? "Tarefa" : "Nova tarefa"}</h3>${m.err ? hint(m.err) : ""}
+      ${t ? `<button type="button" class="btn ghost" data-s="feita">${t.done ? "Voltar para as abertas" : "Marcar como feita"}</button>` : ""}
+      <form novalidate>
+      <label class="field"><span>O que precisa ser feito</span><input data-m="text" maxlength="300" value="${esc(m.text)}" autocomplete="off" placeholder="Ex.: Pagar o condomínio" enterkeyhint="done"></label>
+      <div class="field"><span>De quem é</span><div class="chips" role="group" aria-label="De quem é a tarefa">
+        ${quem.map(([v, nome]) => `<button type="button" data-s="who" data-v="${esc(v)}" aria-pressed="${m.who === v}">${esc(nome)}</button>`).join("")}</div></div>
+      <div class="field"><span>Prazo (opcional)</span><input type="date" data-m="due" value="${esc(m.due)}" aria-label="Prazo da tarefa">
+        <div class="chips" style="margin:8px 0 0" role="group" aria-label="Atalhos de prazo"><button type="button" data-s="prazo" data-v="0">Hoje</button><button type="button" data-s="prazo" data-v="1">Amanhã</button>${m.due ? `<button type="button" data-s="prazo" data-v="">Sem prazo</button>` : ""}</div></div>
+      ${t && !t.done ? `<div class="field"><span>Lembrete</span>${rem ? `<div class="remrow"><span class="alarm">${ic("alarm", 18, 2)}${esc(quandoTxt(rem.remind_at))}</span><button type="button" class="btn small ghost" data-s="lembrar">Mudar</button></div>` : `<button type="button" class="btn ghost" style="margin-top:0" data-s="lembrar">${ic("alarm", 18, 2)} Me lembrar</button>`}</div>` : ""}
+      <button class="btn" type="submit">${t ? "Salvar" : "Criar tarefa"}</button>
+      ${t ? `<button type="button" class="btn warn" data-s="apagar">Apagar tarefa</button>` : ""}</form>`,
+    on: {
+      who: x => { m.who = x.dataset.v; drawSheet(); },
+      prazo: x => { const v = x.dataset.v; m.due = v === "" ? "" : ymd(new Date(t0.getFullYear(), t0.getMonth(), t0.getDate() + +v)); drawSheet(); },
+      lembrar: () => openLembrar(t.id),
+      feita: async () => { await toggleItem(t.id); closeSheet(); },
+      apagar: () => apagarTarefa(t.id),
+      submit: async () => {
+        const texto = m.text.replace(/\s+/g, " ").trim();
+        if (!texto) { m.err = "Escreva o que precisa ser feito."; drawSheet(); return; }
+        const assignee = m.who || null;
+        if (t) {
+          const patch = {};
+          if (texto !== t.text) patch.text = texto;
+          if (assignee !== (t.assignee || null)) patch.assignee = assignee;
+          if ((m.due || null) !== (t.due_on || null)) patch.due_on = m.due || null;
+          if (Object.keys(patch).length) Object.assign(t, await q(sb.from("list_items").update(patch).eq("id", t.id).select().single()));
+          closeSheet(); render(true); toast("Tarefa salva.");
+          if ("assignee" in patch && assignee !== eu) avisarTarefas();
+        } else {
+          const r = await q(sb.from("list_items").insert({ list_id: L.id, couple_id: S.couple.id, text: texto, position: nextPos(L.id), assignee, due_on: m.due || null }).select().single());
+          S.items.push(r); closeSheet(); render(true); toast(assignee === eu || !p ? "Tarefa criada." : `Tarefa criada. ${p.display_name || "Quem você ama"} recebe um aviso.`);
+          if (assignee !== eu) avisarTarefas();
+        }
+      }
+    }
+  });
+}
+function apagarTarefa(id) {
+  const t = S.items.find(i => i.id === id); if (!t) return;
+  askConfirm(`Apagar "${t.text.length > 60 ? t.text.slice(0, 59) + "…" : t.text}"?`, "A tarefa some para os dois.", "Apagar", async () => {
+    await q(sb.from("list_items").delete().eq("id", id));
+    S.items = S.items.filter(i => i.id !== id); S.taskRem = S.taskRem.filter(r => r.item_id !== id);
+    closeSheet(); render(true); toast("Tarefa apagada.");
+  });
+}
+
+/* "Me lembrar": opções rápidas; quem toca no aviso cai aqui (fromPush) */
+const pad2dt = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+function opcoesLembrete(t) {
+  const agora = new Date(), em = (dias, h) => new Date(agora.getFullYear(), agora.getMonth(), agora.getDate() + dias, h, 0, 0, 0);
+  const o = [{ label: "Daqui a 1 hora", when: new Date(agora.getTime() + 3600e3) }];
+  const h18 = em(0, 18);
+  o.push(h18 - agora > 5 * 60e3 ? { label: "Hoje, 18h", when: h18 } : { label: "Amanhã, 18h", when: em(1, 18) });
+  o.push({ label: "Amanhã, 9h", when: em(1, 9) });
+  if (t.due_on) { const d9 = parseYmd(t.due_on); d9.setHours(9, 0, 0, 0); if (d9 > agora && !o.some(x => x.when.getTime() === d9.getTime())) o.push({ label: "No dia do prazo, 9h", when: d9 }); }
+  return o;
+}
+function openLembrar(id, opts = {}) {
+  const t = S.items.find(i => i.id === id); if (!t) return;
+  const rem = myReminder(id), m = { custom: false, when: "", err: "" };
+  const quemPassou = t.assigned_by && t.assigned_by !== S.user.id ? nameOf(t.assigned_by) : "";
+  const salvar = async when => {
+    if (!(when > new Date(Date.now() + 30e3))) { m.err = "Escolha um horário que ainda não passou."; drawSheet(); return; }
+    await q(sb.rpc("set_task_reminder", { p_item: id, p_at: when.toISOString() }));
+    S.taskRem = S.taskRem.filter(r => r.item_id !== id); S.taskRem.push({ item_id: id, user_id: S.user.id, couple_id: S.couple.id, remind_at: when.toISOString(), sent_at: null });
+    closeSheet(); render(true); toast(`Lembrete marcado: ${quandoTxt(when.toISOString())}.`); offerPush();
+  };
+  openSheet({
+    model: m, focus: false,
+    view: () => `<h3>${opts.push ? "Me lembrar?" : "Me lembrar"}</h3>
+      ${opts.push && quemPassou ? `<p class="hint">${esc(quemPassou)} ${t.assignee ? "te passou" : "criou para vocês dois"} esta tarefa.</p>` : ""}
+      <p class="tq">${esc(t.text)}</p>${m.err ? hint(m.err) : ""}
+      <div class="lopts" role="group" aria-label="Quando lembrar">
+      ${opcoesLembrete(t).map((o, i) => `<button type="button" class="lopt" data-s="lemb" data-i="${i}"><span>${esc(o.label)}</span><em>${esc(quandoTxt(o.when.toISOString()))}</em></button>`).join("")}
+      ${m.custom ? "" : `<button type="button" class="lopt" data-s="outro"><span>Escolher dia e hora</span><em aria-hidden="true">${ic("next", 16, 2.4)}</em></button>`}
+      </div>
+      ${m.custom ? `<label class="field" style="margin-top:12px"><span>Dia e hora</span><input type="datetime-local" data-m="when" value="${esc(m.when)}" min="${esc(pad2dt(new Date()))}"></label><button type="button" class="btn" data-s="definir">Definir lembrete</button>` : ""}
+      ${rem ? `<button type="button" class="btn warn" data-s="tirar">Tirar o lembrete (${esc(quandoTxt(rem.remind_at))})</button>` : ""}
+      <button type="button" class="btn ghost" data-s="agora-nao">${opts.push ? "Agora não" : "Voltar"}</button>`,
+    on: {
+      lemb: x => salvar(opcoesLembrete(t)[+x.dataset.i].when),
+      outro: () => { const d = new Date(Date.now() + 3600e3); d.setMinutes(0, 0, 0); m.custom = true; m.when = pad2dt(d); drawSheet(); },
+      definir: () => { const d = m.when ? new Date(m.when) : null; if (!d || isNaN(d)) { m.err = "Escolha o dia e a hora."; drawSheet(); return; } return salvar(d); },
+      tirar: async () => {
+        await q(sb.rpc("set_task_reminder", { p_item: id, p_at: null }));
+        S.taskRem = S.taskRem.filter(r => r.item_id !== id); closeSheet(); render(true); toast("Lembrete removido.");
+      },
+      "agora-nao": () => sheetBack()
+    }
+  }, !!SH);
+}
+/* toque no aviso: abre a lista Tarefas na tarefa certa. m=lembrar abre o "Me lembrar"; m=ver abre a tarefa */
+async function abrirTarefaDoAviso(id, modo) {
+  let t = S.items.find(i => i.id === id);
+  if (!t) { try { await loadData(); } catch (e) { } t = S.items.find(i => i.id === id); }
+  closePanel(); closeViewer(); closeSheet();
+  const L = tasksList(); if (L) { UI.tab = "listas"; UI.openList = L.id; render(); }
+  if (!t) { toast("Essa tarefa não existe mais."); return; }
+  if (modo === "lembrar" && !t.done) openLembrar(id, { push: true }); else openTarefa(id);
+}
+
 /* ---- calendário ---- */
 const CASAL_COR = "#b3122a";
 const PALETA = [["#2f6fd6", "Azul"], ["#2f8f5b", "Verde"], ["#e07a1f", "Laranja"], ["#7a4fd0", "Roxo"], ["#d9a400", "Amarelo"], ["#1f8a8a", "Azul-petróleo"], ["#e0899a", "Rosa"], ["#6e0b1a", "Vinho"], ["#7d6f71", "Cinza"], ["#c2410c", "Terracota"]];
 const SUG_CALS = ["Médicos", "Viagens", "Filhos", "Tarefas da casa", "Trabalho"];
-const HID_KEY = "us-cal-ocultos";
 let HID = new Set();
 try { HID = new Set(JSON.parse(localStorage.getItem(HID_KEY) || "[]")); } catch (e) { HID = new Set(); }
 function saveHid() { try { localStorage.setItem(HID_KEY, JSON.stringify([...HID])); } catch (e) { } }
@@ -1686,9 +1890,15 @@ function openNewList() {
 }
 async function toggleItem(id) {
   const it = S.items.find(i => i.id === id); if (!it) return;
-  it.done = !it.done; render(true);
-  try { await q(sb.from("list_items").update({ done: it.done }).eq("id", id)); touchList(it.list_id); }
-  catch (e) { it.done = !it.done; render(true); toast(friendly(e)); }
+  const tarefa = isTask(it), antes = { done: it.done, done_by: it.done_by, done_at: it.done_at };
+  it.done = !it.done;
+  if (tarefa) { it.done_by = it.done ? S.user.id : null; it.done_at = it.done ? new Date().toISOString() : null; }
+  render(true);
+  try {
+    if (tarefa) { Object.assign(it, await q(sb.from("list_items").update({ done: it.done }).eq("id", id).select().single())); render(true); avisarTarefas(); }
+    else { await q(sb.from("list_items").update({ done: it.done }).eq("id", id)); touchList(it.list_id); }
+  }
+  catch (e) { Object.assign(it, antes); render(true); toast(friendly(e)); }
 }
 async function deleteItem(id) {
   const it = S.items.find(i => i.id === id); if (!it) return;
@@ -2253,7 +2463,7 @@ $("tabbar").addEventListener("click", e => {
 });
 let sugBusy = false;
 $("main").addEventListener("click", e => {
-  const t = e.target.closest("[data-media],[data-act],[data-seg],[data-list],[data-check],[data-delitem],[data-day],[data-mon],[data-trip],[data-place],[data-delev],[data-ev],[data-sug],[data-rate],[data-delsec],[data-pm],[data-dayname],[data-pday]");
+  const t = e.target.closest("[data-media],[data-act],[data-seg],[data-list],[data-check],[data-delitem],[data-day],[data-mon],[data-trip],[data-place],[data-delev],[data-ev],[data-sug],[data-rate],[data-delsec],[data-pm],[data-dayname],[data-pday],[data-tarefa]");
   if (!t) return;
   const d = t.dataset;
   if (d.media) return openViewer(d.media, !!t.closest(".grid.rev"));
@@ -2269,6 +2479,7 @@ $("main").addEventListener("click", e => {
   if (d.trip) return openPanel("trip", d.trip);
   if (d.place) return openPanel("place", d.place);
   if (d.list) { UI.openList = d.list; return render(); }
+  if (d.tarefa) return openTarefa(d.tarefa);
   if (d.check) return toggleItem(d.check);
   if (d.delitem) return deleteItem(d.delitem);
   if (d.delev) return deleteEvent(d.delev);
@@ -2300,6 +2511,8 @@ $("main").addEventListener("click", e => {
     "p-feed": () => UI.sel && UI.sel.size && porNoFeed([...UI.sel]).catch(err => toast(friendly(err))),
     "p-salvar-sel": () => UI.sel && UI.sel.size && salvarFotos([...UI.sel].map(findMedia).filter(Boolean)),
     "p-apagar": () => UI.sel && UI.sel.size && apagarFotos([...UI.sel]),
+    novatarefa: () => openTarefa(null), vertarefas: () => { const L = tasksList(); if (L) { UI.openList = L.id; render(); } },
+    feitas: () => { UI.tarefasFeitas = !UI.tarefasFeitas; render(true); },
     novalista: openNewList, novasecao: newSection, darnota: toggleRated, organizar, voltarlista: () => { UI.openList = null; render(); }, fixar: togglePin, apagarlista: deleteList, copiarlista: copyList,
     hoje: () => { const n = todayDate(); UI.calY = n.getFullYear(); UI.calM = n.getMonth(); UI.selDay = ymd(n); render(true); },
     evento: () => openEventForm(), calendarios: openCalendarios
@@ -2414,7 +2627,7 @@ document.addEventListener("visibilitychange", () => { if (document.visibilitySta
    O iPhone às vezes apaga o localStorage do app instalado na tela inicial.
    Guardamos a sessão em dois lugares (localStorage + IndexedDB) e lemos de quem tiver. */
 const sessionStore = (() => {
-  const DB = "us-sessao", ST = "kv";
+  const DB = SESSAO_DB, ST = "kv";
   let dbp = null;
   const idb = () => dbp || (dbp = new Promise((res, rej) => {
     try { const r = indexedDB.open(DB, 1); r.onupgradeneeded = () => r.result.createObjectStore(ST); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); } catch (e) { rej(e); }
@@ -2434,7 +2647,7 @@ const sessionStore = (() => {
   };
 })();
 /* quem já estava logado com a chave antiga não precisa entrar de novo */
-try { const old = localStorage.getItem("sb-qjouhtitpufjnhocbnbs-auth-token"); if (old && !localStorage.getItem("us-auth")) localStorage.setItem("us-auth", old); } catch (e) { }
+if (!TESTE) { try { const old = localStorage.getItem("sb-qjouhtitpufjnhocbnbs-auth-token"); if (old && !localStorage.getItem("us-auth")) localStorage.setItem("us-auth", old); } catch (e) { } }
 
 /* ============ começar ============ */
 async function init() {
@@ -2442,11 +2655,12 @@ async function init() {
   showGate(loadingHTML("Abrindo o Us…"));
   let key = SB_KEY;
   try { const r = await fetch(`${SB_URL}/auth/v1/settings`, { headers: { apikey: SB_KEY } }); if (r.status === 401 || r.status === 403) key = SB_KEY_LEGADA; } catch (e) { /* offline: segue com a chave principal */ }
-  sb = window.supabase.createClient(SB_URL, key, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storage: sessionStore, storageKey: "us-auth" } });
+  sb = window.supabase.createClient(SB_URL, key, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storage: sessionStore, storageKey: AUTH_KEY } });
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { }
   const h = location.hash || "";
   if (/type=recovery/.test(h)) UI.recovery = true;
   else if (/^#cal\b/.test(h)) { UI.tab = "cal"; history.replaceState(null, "", location.pathname); }
+  else if (/^#tarefa=/.test(h)) { const mt = /^#tarefa=([0-9a-f-]{36})(?:&m=(\w+))?/i.exec(h); if (mt) UI.abrirTarefa = { id: mt[1], modo: mt[2] || "ver" }; history.replaceState(null, "", location.pathname); }
   else if (/^#fotos\b/.test(h)) { UI.tab = "fotos"; UI.abrirPasseio = true; history.replaceState(null, "", location.pathname); }
   let hashErr = "";
   if (/error_code=otp_expired|error=access_denied/.test(h)) { hashErr = "O link venceu ou já foi usado. Peça um novo em Esqueci a senha."; history.replaceState(null, "", location.pathname); }
@@ -2478,6 +2692,7 @@ if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) {
 }
 if ("serviceWorker" in navigator) navigator.serviceWorker.addEventListener("message", e => {
   if (e.data && e.data.tipo === "abrir-calendario" && S.couple) { closePanel(); closeViewer(); closeSheet(); UI.tab = "cal"; render(); }
+  if (e.data && e.data.tipo === "abrir-tarefa" && S.couple) abrirTarefaDoAviso(e.data.id, e.data.modo);
   if (e.data && e.data.tipo === "abrir-fotos" && S.couple) { closePanel(); closeViewer(); closeSheet(); UI.tab = "fotos"; render(); openPanel("passeio"); }
 });
 if (/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) window.__usFotos = { S, UI, urlCache, readExifDate, injectExif, prepararFoto, passeioDias, render, openPanel, closeSheet, salvarFotos, exifDateFromString, iniciarEnvio, setSb: x => { sb = x; }, envio: () => ENVIO,
